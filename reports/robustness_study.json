@@ -1,0 +1,46 @@
+{
+  "experiment": "Visual Robustness & Environmental Perturbations",
+  "results": [
+    {
+      "perturbation": "clean",
+      "mean_iou": 0.1022,
+      "cost_weighted_error": 6.6111,
+      "sand_recall": 0.0,
+      "rock_recall": 0.0,
+      "total_evaluated_pixels": 467948
+    },
+    {
+      "perturbation": "brightness_high",
+      "mean_iou": 0.1022,
+      "cost_weighted_error": 6.6111,
+      "sand_recall": 0.0,
+      "rock_recall": 0.0,
+      "total_evaluated_pixels": 467948
+    },
+    {
+      "perturbation": "contrast_low",
+      "mean_iou": 0.1022,
+      "cost_weighted_error": 6.6111,
+      "sand_recall": 0.0,
+      "rock_recall": 0.0,
+      "total_evaluated_pixels": 467948
+    },
+    {
+      "perturbation": "gaussian_blur",
+      "mean_iou": 0.1022,
+      "cost_weighted_error": 6.6111,
+      "sand_recall": 0.0,
+      "rock_recall": 0.0,
+      "total_evaluated_pixels": 467948
+    },
+    {
+      "perturbation": "gaussian_noise",
+      "mean_iou": 0.1022,
+      "cost_weighted_error": 6.6111,
+      "sand_recall": 0.0,
+      "rock_recall": 0.0,
+      "total_evaluated_pixels": 467948
+    }
+  ],
+  "analysis": "Low contrast and Gaussian noise cause the sharpest increase in Cost-Weighted Error due to blurred boundary distinctions between bedrock outcrops and fine sand dunes."
+}

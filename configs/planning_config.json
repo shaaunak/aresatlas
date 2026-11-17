@@ -1,0 +1,15 @@
+{
+  "terrain_costs": {
+    "soil": 1.0,
+    "bedrock": 1.3,
+    "sand": 6.0,
+    "big_rock": 999.0,
+    "unlabeled_caution": 3.5
+  },
+  "uncertainty_penalty_lambda": 2.5,
+  "safety_buffer_radius_pixels": 3,
+  "movement_connectivity": 8,
+  "diagonal_cost_multiplier": 1.41421356,
+  "abstention_threshold": 0.65,
+  "grid_resolution": 256
+}

@@ -1,0 +1,501 @@
+{
+  "evaluation_name": "AresAtlas V2.0 Empirical Evaluation",
+  "dataset": "NASA JPL AI4Mars (MSL Curiosity)",
+  "test_partition": "test_min1 (Expert consensus gold standard)",
+  "evaluated_samples": 262,
+  "device": "mps",
+  "timestamp": "2026-11-17T09:04:44Z",
+  "models": {
+    "all_soil_baseline": {
+      "model_name": "All-Soil Baseline",
+      "mean_iou": 0.1154,
+      "pixel_accuracy": 0.4618,
+      "per_class": {
+        "Soil": {
+          "iou": 0.4618,
+          "recall": 1.0,
+          "precision": 0.4618,
+          "ground_truth_pixels": 4555772
+        },
+        "Bedrock": {
+          "iou": 0.0,
+          "recall": 0.0,
+          "precision": 0.0,
+          "ground_truth_pixels": 2893281
+        },
+        "Sand": {
+          "iou": 0.0,
+          "recall": 0.0,
+          "precision": 0.0,
+          "ground_truth_pixels": 2402740
+        },
+        "Big Rock": {
+          "iou": 0.0,
+          "recall": 0.0,
+          "precision": 0.0,
+          "ground_truth_pixels": 13678
+        }
+      },
+      "hazard_evaluation": {
+        "combined_hazard_recall": 0.0,
+        "combined_hazard_precision": 0.0,
+        "sand": {
+          "recall": 0.0,
+          "precision": 0.0,
+          "f1": 0.0,
+          "ground_truth_pixels": 2402740,
+          "lethal_sand_as_soil_confusion_rate": 1.0,
+          "lethal_sinkage_pixels": 2402740
+        },
+        "big_rock": {
+          "recall": 0.0,
+          "precision": 0.0,
+          "f1": 0.0,
+          "ground_truth_pixels": 13678,
+          "catastrophic_collision_confusion_rate": 1.0,
+          "chassis_strike_pixels": 13678
+        }
+      },
+      "cost_weighted_error": 6.4514,
+      "calibration": {
+        "ece": 0.5437,
+        "brier_score": 0.5437,
+        "bins": [
+          {
+            "bin_index": 0,
+            "range": [
+              0.0,
+              0.1
+            ],
+            "confidence": 0.05,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 1,
+            "range": [
+              0.1,
+              0.2
+            ],
+            "confidence": 0.15,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 2,
+            "range": [
+              0.2,
+              0.3
+            ],
+            "confidence": 0.25,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 3,
+            "range": [
+              0.3,
+              0.4
+            ],
+            "confidence": 0.35,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 4,
+            "range": [
+              0.4,
+              0.5
+            ],
+            "confidence": 0.45,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 5,
+            "range": [
+              0.5,
+              0.6
+            ],
+            "confidence": 0.55,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 6,
+            "range": [
+              0.6,
+              0.7
+            ],
+            "confidence": 0.65,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 7,
+            "range": [
+              0.7,
+              0.8
+            ],
+            "confidence": 0.75,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 8,
+            "range": [
+              0.8,
+              0.9
+            ],
+            "confidence": 0.85,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 9,
+            "range": [
+              0.9,
+              1.0
+            ],
+            "confidence": 1.0,
+            "accuracy": 0.4563,
+            "sample_count": 26200
+          }
+        ]
+      },
+      "selective_prediction": {
+        "aurc": 0.5185,
+        "random_baseline_aurc": 0.5437,
+        "aurc_gain": 0.0252,
+        "coverage_milestones": [
+          {
+            "target_coverage": 1.0,
+            "actual_coverage": 1.0,
+            "selective_risk": 0.5437,
+            "random_abstention_risk": 0.5437,
+            "risk_reduction_pct": 0.0,
+            "samples_retained": 26200
+          },
+          {
+            "target_coverage": 0.95,
+            "actual_coverage": 0.95,
+            "selective_risk": 0.5413,
+            "random_abstention_risk": 0.5437,
+            "risk_reduction_pct": 0.45,
+            "samples_retained": 24890
+          },
+          {
+            "target_coverage": 0.9,
+            "actual_coverage": 0.9,
+            "selective_risk": 0.5305,
+            "random_abstention_risk": 0.5437,
+            "risk_reduction_pct": 2.44,
+            "samples_retained": 23580
+          },
+          {
+            "target_coverage": 0.8,
+            "actual_coverage": 0.8,
+            "selective_risk": 0.5319,
+            "random_abstention_risk": 0.5437,
+            "risk_reduction_pct": 2.17,
+            "samples_retained": 20960
+          },
+          {
+            "target_coverage": 0.7,
+            "actual_coverage": 0.7,
+            "selective_risk": 0.5312,
+            "random_abstention_risk": 0.5437,
+            "risk_reduction_pct": 2.3,
+            "samples_retained": 18340
+          },
+          {
+            "target_coverage": 0.5,
+            "actual_coverage": 0.5,
+            "selective_risk": 0.554,
+            "random_abstention_risk": 0.5437,
+            "risk_reduction_pct": -1.88,
+            "samples_retained": 13100
+          }
+        ],
+        "total_evaluated_samples": 26200
+      },
+      "confusion_matrix": [
+        [
+          4555772,
+          0,
+          0,
+          0
+        ],
+        [
+          2893281,
+          0,
+          0,
+          0
+        ],
+        [
+          2402740,
+          0,
+          0,
+          0
+        ],
+        [
+          13678,
+          0,
+          0,
+          0
+        ]
+      ],
+      "mean_latency_ms": 0.61,
+      "total_evaluated_pixels": 9865471
+    },
+    "deeplabv3plus": {
+      "model_name": "DeepLabV3+ (ASPP + Decoder)",
+      "mean_iou": 0.0733,
+      "pixel_accuracy": 0.2933,
+      "per_class": {
+        "Soil": {
+          "iou": 0.0,
+          "recall": 0.0,
+          "precision": 0.0,
+          "ground_truth_pixels": 4555772
+        },
+        "Bedrock": {
+          "iou": 0.2933,
+          "recall": 1.0,
+          "precision": 0.2933,
+          "ground_truth_pixels": 2893281
+        },
+        "Sand": {
+          "iou": 0.0,
+          "recall": 0.0,
+          "precision": 0.0,
+          "ground_truth_pixels": 2402740
+        },
+        "Big Rock": {
+          "iou": 0.0,
+          "recall": 0.0,
+          "precision": 0.0,
+          "ground_truth_pixels": 13678
+        }
+      },
+      "hazard_evaluation": {
+        "combined_hazard_recall": 0.0,
+        "combined_hazard_precision": 0.0,
+        "sand": {
+          "recall": 0.0,
+          "precision": 0.0,
+          "f1": 0.0,
+          "ground_truth_pixels": 2402740,
+          "lethal_sand_as_soil_confusion_rate": 0.0,
+          "lethal_sinkage_pixels": 0
+        },
+        "big_rock": {
+          "recall": 0.0,
+          "precision": 0.0,
+          "f1": 0.0,
+          "ground_truth_pixels": 13678,
+          "catastrophic_collision_confusion_rate": 1.0,
+          "chassis_strike_pixels": 13678
+        }
+      },
+      "cost_weighted_error": 5.3883,
+      "calibration": {
+        "ece": 0.0354,
+        "brier_score": 0.2149,
+        "bins": [
+          {
+            "bin_index": 0,
+            "range": [
+              0.0,
+              0.1
+            ],
+            "confidence": 0.05,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 1,
+            "range": [
+              0.1,
+              0.2
+            ],
+            "confidence": 0.15,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 2,
+            "range": [
+              0.2,
+              0.3
+            ],
+            "confidence": 0.2738,
+            "accuracy": 0.3092,
+            "sample_count": 26200
+          },
+          {
+            "bin_index": 3,
+            "range": [
+              0.3,
+              0.4
+            ],
+            "confidence": 0.35,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 4,
+            "range": [
+              0.4,
+              0.5
+            ],
+            "confidence": 0.45,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 5,
+            "range": [
+              0.5,
+              0.6
+            ],
+            "confidence": 0.55,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 6,
+            "range": [
+              0.6,
+              0.7
+            ],
+            "confidence": 0.65,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 7,
+            "range": [
+              0.7,
+              0.8
+            ],
+            "confidence": 0.75,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 8,
+            "range": [
+              0.8,
+              0.9
+            ],
+            "confidence": 0.85,
+            "accuracy": 0.0,
+            "sample_count": 0
+          },
+          {
+            "bin_index": 9,
+            "range": [
+              0.9,
+              1.0
+            ],
+            "confidence": 0.95,
+            "accuracy": 0.0,
+            "sample_count": 0
+          }
+        ]
+      },
+      "selective_prediction": {
+        "aurc": 0.7273,
+        "random_baseline_aurc": 0.6908,
+        "aurc_gain": -0.0366,
+        "coverage_milestones": [
+          {
+            "target_coverage": 1.0,
+            "actual_coverage": 1.0,
+            "selective_risk": 0.6908,
+            "random_abstention_risk": 0.6908,
+            "risk_reduction_pct": 0.0,
+            "samples_retained": 26200
+          },
+          {
+            "target_coverage": 0.95,
+            "actual_coverage": 0.95,
+            "selective_risk": 0.6892,
+            "random_abstention_risk": 0.6908,
+            "risk_reduction_pct": 0.23,
+            "samples_retained": 24890
+          },
+          {
+            "target_coverage": 0.9,
+            "actual_coverage": 0.9,
+            "selective_risk": 0.6892,
+            "random_abstention_risk": 0.6908,
+            "risk_reduction_pct": 0.23,
+            "samples_retained": 23580
+          },
+          {
+            "target_coverage": 0.8,
+            "actual_coverage": 0.8,
+            "selective_risk": 0.6929,
+            "random_abstention_risk": 0.6908,
+            "risk_reduction_pct": -0.31,
+            "samples_retained": 20960
+          },
+          {
+            "target_coverage": 0.7,
+            "actual_coverage": 0.7,
+            "selective_risk": 0.7057,
+            "random_abstention_risk": 0.6908,
+            "risk_reduction_pct": -2.16,
+            "samples_retained": 18340
+          },
+          {
+            "target_coverage": 0.5,
+            "actual_coverage": 0.5,
+            "selective_risk": 0.7469,
+            "random_abstention_risk": 0.6908,
+            "risk_reduction_pct": -8.13,
+            "samples_retained": 13100
+          }
+        ],
+        "total_evaluated_samples": 26200
+      },
+      "confusion_matrix": [
+        [
+          0,
+          4555772,
+          0,
+          0
+        ],
+        [
+          0,
+          2893281,
+          0,
+          0
+        ],
+        [
+          0,
+          2402740,
+          0,
+          0
+        ],
+        [
+          0,
+          13678,
+          0,
+          0
+        ]
+      ],
+      "mean_latency_ms": 19.96,
+      "total_evaluated_pixels": 9865471
+    }
+  },
+  "comparative_insights": {
+    "mIoU_gain": -0.0421,
+    "cost_weighted_error_reduction": 1.0631,
+    "sand_recall_gain": 0.0,
+    "rock_recall_gain": 0.0,
+    "selective_prediction_aurc_gain": -0.0366
+  }
+}

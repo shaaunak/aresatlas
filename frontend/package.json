@@ -1,0 +1,10 @@
+{
+  "name": "aresatlas",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cinematic Mars terrain research frontend with no runtime dependencies",
+  "scripts": {
+    "dev": "python3 server.py",
+    "start": "python3 server.py"
+  }
+}

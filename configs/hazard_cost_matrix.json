@@ -1,0 +1,18 @@
+{
+  "name": "AresAtlas Research Asymmetric Hazard Misclassification Cost Matrix",
+  "description": "Quantifies the consequential asymmetry of terrain classification errors in simulated planetary navigation. Rows: Ground Truth Class (y), Columns: Predicted Class (y_hat).",
+  "classes": ["Soil", "Bedrock", "Sand", "Big Rock"],
+  "cost_matrix": [
+    [0,  1,  5,  8],
+    [1,  0,  4,  8],
+    [25, 20, 0,  5],
+    [50, 40, 15, 0]
+  ],
+  "rationale": {
+    "Sand_as_Soil": "Lethal slip hazard: Rover enters aeolian dune expecting firm traction, risking irreversible wheel sinkage (e.g., Opportunity Purgatory Dune / Curiosity Pahrump Hills).",
+    "BigRock_as_Soil": "Catastrophic chassis collision: Rover plots path directly through a 20+ cm boulder, causing severe undercarriage impact or high-centering.",
+    "BigRock_as_Bedrock": "Catastrophic strike: Rover mistakes elevated boulder for flat bedrock outcrop.",
+    "Soil_as_Sand": "Suboptimal conservatism: Rover plans minor detour around harmless regolith.",
+    "Soil_as_BigRock": "Suboptimal detour: Rover avoids safe terrain due to false obstacle detection."
+  }
+}

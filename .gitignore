@@ -1,0 +1,69 @@
+# ==============================================================================
+# AresAtlas — Git Ignore Specification
+# ==============================================================================
+
+# Master Kits, Bundles, Archives & PDFs
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.pdf
+AresAtlas*.zip
+AresAtlas_Master_Bundle/
+AresAtlas_Upload_Ready/
+reference_only/
+assets_library/
+qa/
+prompts/
+
+# Datasets and Large Checkpoints (Strictly Excluded from VCS)
+backend/data/
+data/
+*.parquet
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.onnx
+*.bin
+backend/models/*.pt
+backend/models/*.pth
+
+# Python Environments & Caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend Bundler
+node_modules/
+dist/
+build/
+.cache/
+.tmp/
+/tmp/
+
+# Secrets & Environment Files
+.env
+.env.*
+*.pem
+*.key
+*.token
+
+# System & IDE Metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.vscode/
+.idea/
+*.swp
+*.swo

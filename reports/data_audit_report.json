@@ -1,0 +1,104 @@
+{
+  "dataset_name": "NASA JPL AI4Mars (MSL Curiosity)",
+  "source": "NASA Open Data Portal & Hugging Face (hassanjbara/AI4MARS)",
+  "taxonomy": {
+    "0": "Soil",
+    "1": "Bedrock",
+    "2": "Sand",
+    "3": "Big Rock",
+    "255": "Unlabeled / Ignore"
+  },
+  "total_images": 322,
+  "total_valid_pixels": 194268687,
+  "total_ignored_pixels": 143372785,
+  "overall_valid_ratio_pct": 57.54,
+  "splits": {
+    "train": {
+      "image_count": 40,
+      "total_pixels": 41943040,
+      "valid_pixels": 23662918,
+      "ignored_pixels": 18280122,
+      "valid_pixel_pct": 56.42,
+      "class_distribution": {
+        "Soil": {
+          "count": 9637591,
+          "percentage_of_valid": 40.73
+        },
+        "Bedrock": {
+          "count": 8660221,
+          "percentage_of_valid": 36.6
+        },
+        "Sand": {
+          "count": 5249695,
+          "percentage_of_valid": 22.19
+        },
+        "Big Rock": {
+          "count": 115411,
+          "percentage_of_valid": 0.49
+        }
+      }
+    },
+    "val": {
+      "image_count": 20,
+      "total_pixels": 20971520,
+      "valid_pixels": 12736771,
+      "ignored_pixels": 8234749,
+      "valid_pixel_pct": 60.73,
+      "class_distribution": {
+        "Soil": {
+          "count": 6544110,
+          "percentage_of_valid": 51.38
+        },
+        "Bedrock": {
+          "count": 5062106,
+          "percentage_of_valid": 39.74
+        },
+        "Sand": {
+          "count": 1083185,
+          "percentage_of_valid": 8.5
+        },
+        "Big Rock": {
+          "count": 47370,
+          "percentage_of_valid": 0.37
+        }
+      }
+    },
+    "test_expert": {
+      "image_count": 262,
+      "total_pixels": 274726912,
+      "valid_pixels": 157868998,
+      "ignored_pixels": 116857914,
+      "valid_pixel_pct": 57.46,
+      "class_distribution": {
+        "Soil": {
+          "count": 72914448,
+          "percentage_of_valid": 46.19
+        },
+        "Bedrock": {
+          "count": 46293626,
+          "percentage_of_valid": 29.32
+        },
+        "Sand": {
+          "count": 38441472,
+          "percentage_of_valid": 24.35
+        },
+        "Big Rock": {
+          "count": 219452,
+          "percentage_of_valid": 0.14
+        }
+      }
+    }
+  },
+  "calculated_training_class_weights": {
+    "Soil": 0.7216,
+    "Bedrock": 0.8031,
+    "Sand": 1.3248,
+    "Big Rock": 60.2613
+  },
+  "expert_agreement_semantics": {
+    "test_min1": "Images where at least 1 expert annotated; strict consensus gold standard.",
+    "test_min2": "Overlapping images with minimum 2 expert annotations.",
+    "test_min3": "Overlapping images with minimum 3 expert annotations.",
+    "protocol_note": "test_min1, test_min2, test_min3 represent different consensus thresholds on overlapping Martian imagery, not independent test samples."
+  }
+}
