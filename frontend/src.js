@@ -1,1225 +1,162 @@
-// AresAtlas — Verified Mars Terrain Intelligence Research Frontend
-// All empirical metrics are loaded dynamically from verified backend endpoints / JSON reports.
+// AresAtlas — dependency-free, functional research frontend.
+// Every research value displayed is either computed by the local synthetic demonstration
+// or read from the configured backend; no fabricated evaluation metrics are bundled.
 const ROOT = document.querySelector('#app');
 const API = (window.ARESATLAS_API_URL || (()=>{try{return localStorage.getItem('aresatlas_api')}catch{return null}})() || (window.location.port==='8001' ? window.location.origin : 'http://localhost:8001')).replace(/\/$/,'');
 const ASSET = 'assets/';
-
-// Unified Documented Source of Truth for Terrain Classes & Planner Costs
 const CLASSES = [
-  {id: 0, name: 'Soil', color: '#10B981', cost: 1.0, hazard: 'SAFE', desc: 'Fine-grained regolith; optimal traction'},
-  {id: 1, name: 'Bedrock', color: '#06B6D4', cost: 1.3, hazard: 'MODERATE', desc: 'Exposed outcrop; firm but uneven traction'},
-  {id: 2, name: 'Sand', color: '#F59E0B', cost: 6.0, hazard: 'CRITICAL', desc: 'Loose aeolian dune; severe wheel-slip & sinkage hazard'},
-  {id: 3, name: 'Big Rock', color: '#EF4444', cost: 999.0, hazard: 'LETHAL', desc: 'Boulders >15cm; chassis strike / impassable obstacle'}
+  {name:'Soil',color:'#b29b8b',cost:1.0},
+  {name:'Bedrock',color:'#867c82',cost:1.5},
+  {name:'Sand',color:'#bb956f',cost:3.2},
+  {name:'Big Rock',color:'#965c4e',cost:6.5}
 ];
-
 const ROUTES = [
   ['home','Overview'],['terrain','Terrain Analysis'],['route','Route Lab'],
   ['uncertainty','Uncertainty Lab'],['models','Model Evaluation'],['research','Research']
 ];
 const MORE = [['regret','Route Regret'],['dataset','Dataset'],['lab','Model Laboratory']];
-
 let currentRoute = 'home';
-let currentAsset = ASSET + 'mars-terrain.webp';
+let currentAsset = ASSET+'mars-terrain.webp';
+let heroPos = 0;
 let routeContext = null;
+let rerenderPlot = null;
 let toastTimeout = null;
-let activeSplitRatio = 0.5;
-let isDraggingSplit = false;
-let currentViewMode = 'overlay'; // 'overlay', 'entropy', 'cost', 'split'
-let cachedInference = null;
-
-function logo(){
-  return `<svg class="brand-logo" viewBox="0 0 64 64" aria-hidden="true">
-    <path fill="#ad654b" d="m6 49 23-38 12 20 8-12 11 30H46l-6-12-12 13-7-13-8 12Z"/>
-    <path fill="#dd9e7d" d="m29 11 13 23-8 5-6-10-15 20H6Z"/>
-  </svg>`;
-}
-
-function header(route){
-  return `<header class="site-header fixed">
-    <div class="header-inner">
-      <a href="#home" class="brand" aria-label="AresAtlas home">
-        ${logo()}
-        <span class="brand-name">AresAtlas</span>
-        <span class="brand-divider"></span>
-        <span class="brand-sub">Mars Terrain Intelligence</span>
-      </a>
-      <nav class="nav" id="main-nav" aria-label="Main navigation">
-        ${ROUTES.map(([k,v])=>`<a href="#${k}" class="${route===k?'active':''}">${v}</a>`).join('')}
-        <div class="more" id="more-wrap">
-          <button id="more-btn" aria-expanded="false">More ⌄</button>
-          <div class="more-menu">
-            ${MORE.map(([k,v])=>`<a class="${route===k?'active':''}" href="#${k}">${v}</a>`).join('')}
-          </div>
-        </div>
-      </nav>
-      <div class="header-actions">
-        <a href="#research" class="btn btn-small btn-plain" style="border:0" aria-label="Research notes">Research Notes ↗</a>
-        <a href="#terrain" class="btn btn-small btn-primary">Explore Platform <span>↗</span></a>
-        <button id="menu-toggle" class="menu-toggle" aria-label="Open menu" aria-expanded="false">☰</button>
-      </div>
-    </div>
-  </header>`;
-}
-
-function footer(){
-  return `<div class="container">
-    <div class="footer">
-      <span>© 2026 AresAtlas · Planetary robotics & terrain perception research. Independent implementation based on NASA JPL AI4Mars (MSL Curiosity).</span>
-      <span>Research Data: <a href="https://huggingface.co/datasets/hassanjbara/AI4MARS" rel="noopener noreferrer" target="_blank">AI4Mars ↗</a> · License: MIT</span>
-    </div>
-  </div>`;
-}
-
-function banner(eyebrow,title,desc,tabs=[],image=''){
-  return `<section class="page-banner" ${image?`style="--pimg:url('${image}')"`:''}>
-    <div class="container">
-      <div class="micro">${eyebrow}</div>
-      <h1>${title}</h1>
-      <p>${desc}</p>
-      ${tabs.length?`<div class="banner-tabs">${tabs.map((x,i)=>`<span class="banner-tab ${i===0?'active':''}">${x}</span>`).join('')}</div>`:''}
-    </div>
-  </section>`;
-}
-
-function metricCard(label,value,sub){
-  return `<div class="stat">
-    <div class="stat-label">${label}</div>
-    <div class="stat-value">${value}</div>
-    <div class="stat-sub subtle">${sub}</div>
-  </div>`;
-}
-
-function esc(str){
-  return String(str).replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]));
-}
-
-async function fetchJSON(path,opt={}){
-  const ctrl = new AbortController();
-  const timer = setTimeout(()=>ctrl.abort(), 8000);
-  try {
-    const res = await fetch(API + path, {...opt, signal: ctrl.signal});
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function toast(message){
-  const t = document.querySelector('#toast');
-  if(!t) return;
-  t.textContent = message;
-  t.classList.add('show');
-  clearTimeout(toastTimeout);
-  toastTimeout = setTimeout(()=>t.classList.remove('show'), 4000);
-}
-
-// -------------------------------------------------------------
-// 1. HOME VIEW
-// -------------------------------------------------------------
-function home(){
-  return `<div class="scrollfade">
-    <main>
-      <section class="hero">
-        <div class="hero-photo" id="hero-photo"></div>
-        <div class="hero-shade"></div>
-        <div class="container">
-          <div class="micro hero-eyebrow">PLANETARY EXPLORATION PLATFORM</div>
-          <h1>AresAtlas</h1>
-          <div class="hero-intro">Terrain intelligence, predictive uncertainty, and decision-aware routing on Mars.</div>
-          <p class="hero-desc">An empirical research platform evaluating how semantic segmentation errors and Bayesian uncertainty propagate to simulated surface navigation costs using NASA JPL AI4Mars Curiosity data.</p>
-          <div class="hero-actions">
-            <a href="#terrain" class="btn btn-primary">Launch Terrain Analysis <span>→</span></a>
-            <a href="#regret" class="btn">Explore Route Regret <span>↗</span></a>
-          </div>
-          <div class="hero-caption">
-            <span>◈ &nbsp;4-Class Perception</span><i class="sep"></i>
-            <span>⌁ &nbsp;Downstream Route Regret</span><i class="sep"></i>
-            <span>◇ &nbsp;Selective Abstention</span>
-          </div>
-        </div>
-        <div class="hero-index">
-          <span class="index-line"></span><span>NASA JPL AI4MARS · CURIOSITY ROVER (MSL)</span>
-        </div>
-      </section>
-
-      <div class="home-features">
-        <a href="#terrain" class="home-feature">
-          <img src="${ASSET}feature-basin.webp" class="feature-image" alt="Terrain segmentation feature">
-          <div class="feature-copy">
-            <div class="feature-overline">01 / PERCEPTION</div>
-            <h3>Terrain Analysis</h3>
-            <p>Interactive segmentation overlay, before/after split viewer, and live pixel inspector.</p>
-          </div>
-          <span class="feature-go">↗</span>
-        </a>
-        <a href="#route" class="home-feature">
-          <img src="${ASSET}feature-rock-field.webp" class="feature-image" alt="Route simulator feature">
-          <div class="feature-copy">
-            <div class="feature-overline">02 / PATHFINDING</div>
-            <h3>Route Simulator</h3>
-            <p>Evaluate Dijkstra and A* trajectories across hazard-weighted traversability fields.</p>
-          </div>
-          <span class="feature-go">↗</span>
-        </a>
-        <a href="#regret" class="home-feature">
-          <img src="${ASSET}mars-ridge-detail.webp" class="feature-image" alt="Route regret feature">
-          <div class="feature-copy">
-            <div class="feature-overline">03 / DECISION METRIC</div>
-            <h3>Route Regret</h3>
-            <p>Measure excess traverse cost caused by perception mistakes versus oracle path planning.</p>
-          </div>
-          <span class="feature-go">↗</span>
-        </a>
-      </div>
-
-      <div class="reference-facts container">
-        <div><span>01 / TAXONOMY</span><strong>4 Terrain Classes</strong><small>Soil (1.0) · Bedrock (1.3) · Sand (6.0) · Big Rock (999.0)</small></div>
-        <div><span>02 / OBJECTIVE</span><strong>Downstream Regret</strong><small>Evaluates (C_pred - C_oracle) on ground truth</small></div>
-        <div><span>03 / CALIBRATION</span><strong>Selective Prediction</strong><small>Risk-coverage abstention prevents hazard strikes</small></div>
-        <div><span>04 / INTEGRITY</span><strong>Verified Science</strong><small>Honest metrics grounded in reproducibility</small></div>
-      </div>
-    </main>
-    ${footer()}
-  </div>`;
-}
-
-// -------------------------------------------------------------
-// 2. TERRAIN ANALYSIS VIEW
-// -------------------------------------------------------------
-function terrain(){
-  return `<div class="scrollfade terrain-page">
-    ${banner('01 / SURFACE PERCEPTION','Terrain Analysis Studio','Inspect pixel-level terrain classifications, predictive entropy heatmaps, and traversability cost distributions with live pixel inspection.',['SEGMENTATION','ENTROPY HEATMAP','COST FIELD','SPLIT COMPARISON'])}
-    <div class="content-main terrain-content">
-      <div class="container">
-        <div class="terrain-layout">
-          <aside class="panel terrain-sidebar">
-            <div class="panel-title">◈ &nbsp; Perception Controls</div>
-            <div class="panel-body">
-              <div class="field">
-                <label>Sample Image</label>
-                <select id="terrain-source">
-                  <option value="ridge">Curiosity Rock Basin (Sample 1)</option>
-                  <option value="plain">Gale Crater Dunes (Sample 2)</option>
-                  <option value="rover">Mount Sharp Traverse (Sample 3)</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Upload Custom Image</label>
-                <label for="terrain-file" class="upload-label">＋ &nbsp; Select Rover Photo
-                  <input type="file" accept="image/*" id="terrain-file">
-                </label>
-              </div>
-              <div class="field">
-                <label>Visualization Mode</label>
-                <select id="view-mode">
-                  <option value="overlay">Color Classification Overlay</option>
-                  <option value="entropy">Predictive Entropy Heatmap</option>
-                  <option value="cost">Traversability Cost Map</option>
-                  <option value="split">Interactive Split-Slider View</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Overlay Opacity <span id="overlay-val">65%</span></label>
-                <input type="range" id="overlay-alpha" min="0" max="100" value="65">
-              </div>
-              <div class="field" id="split-field" style="display:none">
-                <label>Split Divider Position <span id="split-val">50%</span></label>
-                <input type="range" id="split-slider-ctrl" min="0" max="100" value="50">
-              </div>
-              <button id="run-analysis" class="btn btn-primary" style="width:100%">Run Backend Inference →</button>
-              
-              <div class="mini-rule"></div>
-              <div class="micro">CLASS TAXONOMY & TRAVERSAL COST</div>
-              <div class="terrain-legend">
-                ${CLASSES.map(c=>`<div>
-                  <span class="legend-entry"><i class="legend-dot" style="background:${c.color}"></i>${c.name}</span>
-                  <span style="font-weight:600;color:#f0e6db">Cost ${c.cost.toFixed(1)}</span>
-                </div>`).join('')}
-                <div>
-                  <span class="legend-entry"><i class="legend-dot" style="background:#57514d"></i>Unlabeled / Sky</span>
-                  <span style="color:#a89586">Ignore 255</span>
-                </div>
-              </div>
-              <div class="mini-rule"></div>
-              <div class="status-note" id="backend-status">Ready. Click 'Run Backend Inference' to evaluate active model on device.</div>
-            </div>
-          </aside>
-
-          <div class="terrain-body">
-            <div class="panel">
-              <div class="panel-title">
-                ▧ &nbsp; Interactive Terrain Perception Canvas
-                <small id="overlay-title">Standard Resolution: 800 × 500</small>
-              </div>
-              <div class="split-container" id="canvas-container" style="position:relative;cursor:crosshair">
-                <canvas id="seg-canvas" class="terrain-canvas" style="width:100%;height:440px;display:block"></canvas>
-                <div class="split-divider" id="split-divider" style="display:none">
-                  <div class="split-handle">⇄</div>
-                </div>
-              </div>
-              <div class="pixel-hud" id="pixel-hud">
-                <span>Inspector: <strong id="hud-coord">Hover over canvas</strong></span>
-                <span>Class: <strong id="hud-class">—</strong></span>
-                <span>Risk: <strong id="hud-hazard">—</strong></span>
-                <span>Traversal Cost: <strong id="hud-cost">—</strong></span>
-                <span>Entropy: <strong id="hud-entropy">—</strong></span>
-              </div>
-            </div>
-
-            <div class="terrain-microstats">
-              <div class="terrain-stat">
-                <span>CLASS PROPORTION</span>
-                <b id="stat-soil">—</b>
-                <small>Soil (Traversable)</small>
-              </div>
-              <div class="terrain-stat">
-                <span>HAZARD CONCENTRATION</span>
-                <b id="stat-sand">—</b>
-                <small>Sand (Slip Risk)</small>
-              </div>
-              <div class="terrain-stat">
-                <span>OBSTACLES</span>
-                <b id="stat-rock">—</b>
-                <small>Big Rocks (Impassable)</small>
-              </div>
-              <div class="terrain-stat">
-                <span>MEAN ENTROPY</span>
-                <b id="stat-entropy">—</b>
-                <small>Predictive Uncertainty</small>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    ${footer()}
-  </div>`;
-}
-
-// -------------------------------------------------------------
-// 3. ROUTE SIMULATOR & REGRET VIEW
-// -------------------------------------------------------------
-function routePage(isRegret=false){
-  return `<div class="scrollfade route-page">
-    ${banner(
-      isRegret ? '03 / DECISION METRIC' : '02 / TRAVERSABILITY & GRAPH SEARCH',
-      isRegret ? 'Route Regret Laboratory' : 'Autonomous Route Simulator',
-      isRegret
-        ? 'Quantify the downstream penalty of perception errors by comparing Oracle R*, Predicted R_pred, and Uncertainty-Aware R_unc paths on ground truth.'
-        : 'Plan collision-free paths across Martian terrain cost grids using 8-connected Dijkstra and A* graph search algorithms.',
-      isRegret ? ['REGRET FORMULA','ORACLE BENCHMARK','UNCERTAINTY BENEFIT'] : ['COST GRID','A* SOLVER','DIJKSTRA','HAZARD PENALTIES']
-    )}
-    <div class="content-main">
-      <div class="container">
-        <div class="route-controls">
-          <aside class="panel">
-            <div class="panel-title">◈ &nbsp; Planner Parameters</div>
-            <div class="panel-body">
-              <div class="field">
-                <label>Scenario Domain</label>
-                <select id="route-domain">
-                  <option value="track_b">Track B: Dense Synthetic Sand Dune Hazard</option>
-                  <option value="real_ai4mars">Track A: Real AI4Mars Held-Out Image</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Soil Penalty (Class 0): <span id="soil-val">1.0</span></label>
-                <input type="range" id="soil-weight" min="5" max="30" value="10">
-              </div>
-              <div class="field">
-                <label>Bedrock Penalty (Class 1): <span id="bedrock-val">1.3</span></label>
-                <input type="range" id="bedrock-weight" min="5" max="40" value="13">
-              </div>
-              <div class="field">
-                <label>Sand Slip Penalty (Class 2): <span id="sand-val">6.0</span></label>
-                <input type="range" id="sand-weight" min="10" max="150" value="60">
-              </div>
-              <div class="field">
-                <label>Uncertainty Weight (λ): <span id="lambda-val">2.5</span></label>
-                <input type="range" id="lambda-slider" min="0" max="80" value="25">
-              </div>
-              <button id="replan-btn" class="btn btn-primary" style="width:100%">Recompute Routes →</button>
-              <div class="mini-rule"></div>
-              <p class="subtle">Click anywhere on the map to place <strong>Start</strong> (Green) and <strong>Goal</strong> (Orange) coordinates.</p>
-            </div>
-          </aside>
-
-          <div class="route-center">
-            <div class="panel">
-              <div class="panel-title">
-                ⌁ &nbsp; Traversability Map & Simulated Trajectories
-                <small id="route-coord">Start (10, 32) → Goal (65, 12)</small>
-              </div>
-              <div class="route-map" style="position:relative;height:480px;background:#151110">
-                <canvas id="route-canvas" style="width:100%;height:100%;display:block;cursor:crosshair"></canvas>
-                <div class="map-key">
-                  <div><span class="map-color" style="background:#10B981;height:4px"></span><strong style="color:#f0e6db">Oracle R* (Ground Truth Optimal)</strong></div>
-                  <div><span class="map-color" style="background:#EF4444;height:4px"></span><strong style="color:#f0e6db">Predicted R_pred (Model Driven)</strong></div>
-                  <div><span class="map-color" style="background:#F59E0B;height:4px"></span><strong style="color:#f0e6db">Uncertainty R_unc (λ · H Guarded)</strong></div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <aside class="panel">
-            <div class="panel-title">▥ &nbsp; Regret Telemetry</div>
-            <div class="panel-body" id="route-summary">
-              <div class="muted-tag">REGRET METRIC FORMULA</div>
-              <p class="subtle" style="margin:8px 0">Regret = (C_pred - C_oracle) / C_oracle</p>
-              <div class="mini-rule"></div>
-              <div id="route-telemetry-block">Loading route calculation…</div>
-            </div>
-          </aside>
-        </div>
-      </div>
-    </div>
-    ${footer()}
-  </div>`;
-}
-
-// -------------------------------------------------------------
-// 4. UNCERTAINTY LAB VIEW
-// -------------------------------------------------------------
-function uncertainty(){
-  return `<div class="scrollfade uncertainty-premium">
-    ${banner('04 / RELIABILITY & CALIBRATION','Uncertainty & Selective Prediction','Measure model confidence calibration and quantify the risk-coverage trade-off when the rover abstains from ambiguous decisions.',['RISK-COVERAGE','ECE CALIBRATION','ABSTENTION THRESHOLD'])}
-    <div class="content-main">
-      <div class="container">
-        <div class="premium-metric-strip">
-          <div class="premium-metric"><span>RETAINED COVERAGE</span><b id="metric-coverage">85%</b><small>Pixels classified</small></div>
-          <div class="premium-metric"><span>SELECTIVE RISK</span><b id="metric-risk">—</b><small>Error rate on retained</small></div>
-          <div class="premium-metric"><span>ABSTENTION RATE</span><b id="metric-abstain">15%</b><small>Deferred to teleoperation</small></div>
-          <div class="premium-metric"><span>EXPECTED CALIBRATION</span><b id="metric-ece">—</b><small>ECE across 10 bins</small></div>
-          <div class="premium-metric"><span>AURC GAIN</span><b id="metric-aurc">—</b><small>Vs random baseline</small></div>
-        </div>
-
-        <div class="uncertainty-workspace">
-          <section class="panel">
-            <div class="panel-title">◈ &nbsp; Selective Abstention Control</div>
-            <div class="panel-body">
-              <p class="small-p">Configure the model confidence threshold (τ) to discard uncertain predictions before executing traversal:</p>
-              <div class="field" style="margin-top:16px">
-                <label>Abstention Threshold (τ): <strong id="thresh-val">0.65</strong></label>
-                <input id="abstain-slider" type="range" min="30" max="95" value="65" step="5">
-              </div>
-              <div class="selective-value">
-                <span>Autonomous Policy:</span>
-                <b id="policy-recommendation" style="font-size:20px;color:#10B981">AUTONOMOUS</b>
-              </div>
-              <p class="subtle" id="policy-desc">High uncertainty below 15% threshold; autonomous traverse permitted.</p>
-            </div>
-          </section>
-
-          <section class="panel uncertainty-chart" style="grid-column:span 2">
-            <div class="panel-title">⌁ &nbsp; Empirical Risk–Coverage Curve <small>Held-out AI4Mars test set</small></div>
-            <div class="panel-body">
-              <svg id="risk-chart" class="svg-chart" viewBox="0 0 650 280" aria-label="Risk-coverage curve"></svg>
-              <div class="legend" style="margin-top:12px">
-                <span class="legend-entry"><i class="legend-dot" style="background:#ca865e"></i>Model Selective Risk</span>
-                <span class="legend-entry"><i class="legend-dot" style="background:#a7a599"></i>Random Abstention Baseline</span>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel calibration-card">
-            <div class="panel-title">▥ &nbsp; Reliability Diagram <small>10 Uniform Bins</small></div>
-            <div class="panel-body">
-              <svg id="calibration-chart" class="svg-chart" viewBox="0 0 320 240" aria-label="Calibration histogram"></svg>
-              <div class="subtle" style="margin-top:10px">Compares mean predicted confidence against empirical accuracy per bin.</div>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
-    ${footer()}
-  </div>`;
-}
-
-// -------------------------------------------------------------
-// 5. MODEL EVALUATION VIEW
-// -------------------------------------------------------------
-function models(){
-  return `<div class="scrollfade model-reference-page">
-    ${banner('05 / MODEL LABORATORY','Empirical Model Evaluation','Comprehensive benchmarks on the held-out NASA AI4Mars test partition, including confusion matrix heatmap, per-class IoU, and real failure cases.',['METRICS','CONFUSION MATRIX','TRAINING DYNAMICS','FAILURE ANALYSIS'])}
-    <div class="content-main">
-      <div class="container">
-        <div class="model-reference-grid">
-          <aside class="panel">
-            <div class="panel-title">◈ &nbsp; Model Selection</div>
-            <div class="panel-body">
-              <div class="field">
-                <label>Evaluated Model</label>
-                <select id="eval-model-select">
-                  <option value="deeplabv3plus">DeepLabV3+ (ASPP + Decoder, 2.48M params)</option>
-                  <option value="all_soil_baseline">All-Soil Majority Baseline (0 params)</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Test Partition</label>
-                <select id="eval-split-select">
-                  <option value="test_min1">test_min1 (Gold Expert Consensus, N=262)</option>
-                </select>
-              </div>
-              <button id="load-verified-btn" class="btn btn-primary" style="width:100%">Refresh Verified Metrics →</button>
-              <div class="mini-rule"></div>
-              <div class="micro">HARDWARE BENCHMARK CONTEXT</div>
-              <p class="subtle" style="margin-top:8px">Hardware: Apple Silicon MPS (Metal)<br>Batch Size: 1<br>Input Resolution: 256×256</p>
-            </div>
-          </aside>
-
-          <div class="model-body">
-            <div class="metric-cards" id="eval-metric-cards">
-              ${metricCard('Mean IoU', '—', 'Loading verified report…')}
-              ${metricCard('Pixel Accuracy', '—', 'Loading verified report…')}
-              ${metricCard('Big Rock Recall', '—', 'Loading verified report…')}
-              ${metricCard('Cost-Weighted Error', '—', 'Loading verified report…')}
-            </div>
-
-            <div class="model-plots" style="margin-top:14px">
-              <section class="panel" style="grid-column:span 2">
-                <div class="panel-title">Normalized 4×4 Confusion Matrix <small>Held-out Gold Test Split</small></div>
-                <div class="panel-body" id="confusion-container">
-                  <div class="subtle">Awaiting benchmark report…</div>
-                </div>
-              </section>
-
-              <section class="panel" style="grid-column:span 2">
-                <div class="panel-title">Per-Class IoU Breakdown <small>Soil · Bedrock · Sand · Big Rock</small></div>
-                <div class="panel-body" id="per-class-container">
-                  <div class="bar-placeholder">
-                    ${CLASSES.map(c=>`<div><label>${c.name}</label><span class="bar-bg"></span><small>—</small></div>`).join('')}
-                  </div>
-                </div>
-              </section>
-            </div>
-
-            <section class="panel" style="margin-top:14px">
-              <div class="panel-title">⚠ &nbsp; Empirical Failure-Case Taxonomy & Qualitative Analysis</div>
-              <div class="panel-body">
-                <div class="failure-gallery">
-                  <div class="failure-card">
-                    <img src="${ASSET}sample-terrain.webp" alt="Failure mode 1: Sand under shadow">
-                    <h4>01. Sub-Pixel Sand Dunes in Shadow</h4>
-                    <p>Low local contrast in crater shadows causes fine-grained sand ripples to be misclassified as compact Soil, creating high sinkage risk.</p>
-                  </div>
-                  <div class="failure-card">
-                    <img src="${ASSET}mars-ridge.webp" alt="Failure mode 2: Distant bedrock outcrop">
-                    <h4>02. Horizon & Distant Bedrock Confusion</h4>
-                    <p>At distances &gt;20m, camera resolution drops, resulting in high predictive entropy between smooth regolith and flat rock outcrops.</p>
-                  </div>
-                  <div class="failure-card">
-                    <img src="${ASSET}feature-rock-field.webp" alt="Failure mode 3: Partially buried boulder">
-                    <h4>03. Partially Buried Boulder Edges</h4>
-                    <p>Annotator variance in crowdsourced training masks creates fuzzy boundary predictions around boulder perimeters, necessitating spatial dilation buffers.</p>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      </div>
-    </div>
-    ${footer()}
-  </div>`;
-}
-
-// -------------------------------------------------------------
-// 6. DATASET VIEW
-// -------------------------------------------------------------
-function dataset(){
-  return `<div class="scrollfade">
-    ${banner('06 / DATASET PROVENANCE','NASA JPL AI4Mars Dataset','Transparent inspection of the Curiosity MSL rover data, label taxonomy, and consensus annotation protocols.',['PROVENANCE','TAXONOMY','LEAKAGE AUDIT'])}
-    <div class="content-main">
-      <div class="container">
-        <div class="story-hero" style="min-height:260px;background-image:linear-gradient(90deg,#130f0ef7,#150e0d74),url('assets/mars-terrain.webp')">
-          <div class="micro">NASA JPL / CURATOR ATTRIBUTION</div>
-          <h2>Curiosity MSL Autonomous Driving Data</h2>
-          <p>AI4Mars was collected by the Mars Science Laboratory (MSL) Curiosity rover. Our pipeline utilizes the official Hugging Face repository partition (hassanjbara/AI4MARS) with strictly isolated training and expert evaluation partitions.</p>
-        </div>
-
-        <div class="dataset-cards" style="margin-top:20px">
-          ${CLASSES.map((c,i)=>`<div class="dataset-card">
-            <img src="${ASSET}${['mars-terrain.webp','mars-ridge.webp','mars-horizon.webp','mars-rover.webp'][i]}" alt="${c.name} illustration">
-            <div class="copy">
-              <div class="micro">CLASS 0${c.id}</div>
-              <h3>${c.name}</h3>
-              <p>${c.desc}</p>
-              <div style="margin-top:8px;font-size:11px;font-weight:600;color:#c9a28a">Planner Cost Weight: ${c.cost.toFixed(1)}</div>
-            </div>
-          </div>`).join('')}
-        </div>
-      </div>
-    </div>
-    ${footer()}
-  </div>`;
-}
-
-// -------------------------------------------------------------
-// 7. RESEARCH & METHODOLOGY VIEW
-// -------------------------------------------------------------
-function research(){
-  return `<div class="scrollfade research-premium">
-    <section class="research-masthead">
-      <div class="container research-hero-grid">
-        <div>
-          <div class="micro">RESEARCH REPORT & METHODOLOGY</div>
-          <h1>Can rovers navigate<br>safer by modeling<br><em>predictive entropy<br>and route regret?</em></h1>
-          <p>Connecting semantic segmentation directly to simulated route planning costs on Mars. Evaluating the trade-off between perception mistakes, asymmetric hazard penalties, and Bayesian abstention.</p>
-        </div>
-        <aside class="research-resource-stack">
-          <div class="micro">RESEARCH DOCUMENTS</div>
-          <a href="#models"><span>◈</span><strong>Empirical Benchmarks</strong><small>mIoU & CWE on test_min1</small><em>↗</em></a>
-          <a href="#regret"><span>⌁</span><strong>Route Regret Study</strong><small>Oracle vs predicted costs</small><em>↗</em></a>
-          <a href="#uncertainty"><span>◇</span><strong>Selective Prediction</strong><small>Risk-coverage curves</small><em>↗</em></a>
-        </aside>
-      </div>
-    </section>
-
-    <div class="content-main research-ambient">
-      <div class="container">
-        <div class="research-lower-grid" style="grid-template-columns:1fr 1fr">
-          <section class="panel">
-            <div class="panel-title">◇ &nbsp; Mathematical Formulations</div>
-            <div class="panel-body">
-              <h4 style="color:#d5a083;margin-bottom:6px">1. Downstream Route Regret</h4>
-              <p class="subtle">Regret(R_pred, R*) = [ C_true(R_pred) - C_true(R*) ] / C_true(R*)</p>
-              <div class="mini-rule"></div>
-              <h4 style="color:#d5a083;margin-bottom:6px">2. Cost-Weighted Error (CWE)</h4>
-              <p class="subtle">CWE = (1 / N) · Σ Σ M_ij · C_ij (where Sand→Soil cost=25, Rock→Soil cost=50)</p>
-              <div class="mini-rule"></div>
-              <h4 style="color:#d5a083;margin-bottom:6px">3. Predictive Entropy</h4>
-              <p class="subtle">H(x, y) = - Σ p_c(x, y) · log_4( p_c(x, y) + ε )</p>
-            </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-title">⚠ &nbsp; Explicit Scientific Limitations</div>
-            <div class="panel-body">
-              <ul class="research-limit-list">
-                <li><strong>2D Grid Approximations:</strong> Paths are computed on 2D planar projections. 3D digital elevation models (DEM) and gravitational slopes are not yet incorporated.</li>
-                <li><strong>Terramechanics Scope:</strong> Dynamic wheel slip and soil shear sinkage are modeled via proxy cost penalties (Sand=6.0), not physical ODE terramechanics.</li>
-                <li><strong>Curiosity MSL Exclusivity:</strong> The Hugging Face dataset partition covers MSL Curiosity Navcam imagery. Cross-rover domain transfer to MER Spirit/Opportunity is future work.</li>
-                <li><strong>Small-Sample Training Regime:</strong> The local model was trained from scratch on 40 samples on edge hardware, illustrating real data sparsity effects.</li>
-              </ul>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
-    ${footer()}
-  </div>`;
-}
-
-function lab(){
-  return `<div class="scrollfade">
-    ${banner('07 / EXPERIMENT WORKSPACE','Model Laboratory','Inspect trained checkpoints, architecture parameters, and provenance.',['CHECKPOINTS','REGISTRY'])}
-    <div class="content-main">
-      <div class="container">
-        <div class="panel">
-          <div class="panel-title">Experiment Provenance</div>
-          <div class="panel-body" id="lab-provenance">
-            <p class="subtle">Loading model metadata from connected backend…</p>
-          </div>
-        </div>
-      </div>
-    </div>
-    ${footer()}
-  </div>`;
-}
-
-// -------------------------------------------------------------
-// CLIENT ROUTER
-// -------------------------------------------------------------
-const Pages = {
-  home, terrain, route: ()=>routePage(false), regret: ()=>routePage(true),
-  uncertainty, models, dataset, lab, research
+const icons = {
+  cube:'◇', route:'⌁', scan:'▧', research:'✧', model:'▥', uncertainty:'◈', arrow:'↗', grow:'↗'
 };
-
-function render(){
-  const next = location.hash.slice(1).split('?')[0] || 'home';
-  currentRoute = Pages[next] ? next : 'home';
-  document.title = `${(ROUTES.concat(MORE).find(x=>x[0]===currentRoute)||['','AresAtlas'])[1]} — AresAtlas`;
-  ROOT.innerHTML = header(currentRoute) + Pages[currentRoute]();
-
-  document.querySelector('#menu-toggle')?.addEventListener('click', ()=>{
-    document.querySelector('.nav').classList.toggle('open');
-  });
-  document.querySelector('#more-btn')?.addEventListener('click', ()=>{
-    document.querySelector('#more-wrap').classList.toggle('open');
-  });
-
-  if(['route','regret'].includes(currentRoute)) initRoute();
-  if(currentRoute==='terrain') initTerrain();
-  if(currentRoute==='uncertainty') initUncertainty();
-  if(currentRoute==='models') initModels();
-  if(currentRoute==='lab') initLab();
-
-  window.scrollTo({top:0, behavior:'instant'});
+function logo(){return `<svg class="brand-logo" viewBox="0 0 64 64" aria-hidden="true"><path fill="#ad654b" d="m6 49 23-38 12 20 8-12 11 30H46l-6-12-12 13-7-13-8 12Z"/><path fill="#dd9e7d" d="m29 11 13 23-8 5-6-10-15 20H6Z"/></svg>`}
+function header(route){return `<header class="site-header fixed"><div class="header-inner"><a href="#home" class="brand" aria-label="AresAtlas home">${logo()}<span class="brand-name">AresAtlas</span><span class="brand-divider"></span><span class="brand-sub">Mars terrain intelligence</span></a><nav class="nav" id="main-nav" aria-label="Main navigation">${ROUTES.map(([k,v])=>`<a href="#${k}" class="${route===k?'active':''}">${v}</a>`).join('')}<div class="more" id="more-wrap"><button id="more-btn" aria-expanded="false">More⌄</button><div class="more-menu">${MORE.map(([k,v])=>`<a class="${route===k?'active':''}" href="#${k}">${v}</a>`).join('')}</div></div></nav><div class="header-actions"><a href="#research" class="btn btn-small btn-plain" style="border:0" aria-label="Research notes">Research notes ↗</a><a href="#terrain" class="btn btn-small btn-primary">Explore platform <span>↗</span></a><button id="menu-toggle" class="menu-toggle" aria-label="Open menu" aria-expanded="false">☰</button></div></div></header>`}
+function footer(){return `<div class="container"><div class="footer"><span>© 2026 AresAtlas · Independent research demonstration. Not affiliated with NASA.</span><span>Imagery: original illustrative environment · Research data: <a href="https://huggingface.co/datasets/hassanjbara/AI4MARS" rel="noopener noreferrer" target="_blank">AI4Mars ↗</a></span></div></div>`}
+function banner(eyebrow,title,desc,tabs=[],image=''){return `<section class="page-banner" ${image?`style="--pimg:url('${image}')"`:''}><div class="container"><div class="micro">${eyebrow}</div><h1>${title}</h1><p>${desc}</p>${tabs.length?`<div class="banner-tabs">${tabs.map((x,i)=>`<span class="banner-tab ${i===0?'active':''}">${x}</span>`).join('')}</div>`:''}</div></section>`}
+function sectionTitle(k,h,p=''){return `<div class="section-kicker">${k}</div><h2 class="editorial-heading">${h}</h2>${p?`<p class="editorial-p">${p}</p>`:''}`}
+function panel(title,body,extra=''){return `<section class="panel ${extra}"><div class="panel-title">${title}</div><div class="panel-body">${body}</div></section>`}
+function feature(label,desc,img,route,num){return `<a href="#${route}" class="home-feature"><img src="${ASSET}${img}" class="feature-image" alt="Illustrative Martian terrain"><div class="feature-copy"><div class="feature-overline">${num} / Research module</div><h3>${label}</h3><p>${desc}</p></div><span class="feature-go">↗</span></a>`}
+function home(){return `<div class="scrollfade"><main><section class="hero"><div class="hero-photo" id="hero-photo"></div><div class="hero-shade"></div><div class="container"><div class="micro hero-eyebrow">MARS EXPLORATION PLATFORM</div><h1>AresAtlas</h1><div class="hero-intro">Terrain intelligence and decision-aware<br>navigation for Mars exploration.</div><p class="hero-desc">A research platform exploring how visual perception, model uncertainty and terrain classification influence simulated route decisions on Mars.</p><div class="hero-actions"><a href="#terrain" class="btn btn-primary">Explore the platform <span>→</span></a><a href="#research" class="btn">Watch the research <span>↗</span></a></div><div class="hero-caption"><span>◈ &nbsp;Terrain analysis</span><i class="sep"></i><span>⌁ &nbsp;Route simulation</span><i class="sep"></i><span>◇ &nbsp;Decision uncertainty</span></div></div><div class="hero-index"><span class="index-line"></span><span>NASA AI4MARS · COMPUTER VISION RESEARCH</span></div></section><div class="home-features">${feature('Terrain analysis','Inspect surface classes and where a model sees uncertainty.','feature-basin.webp','terrain','01')}${feature('Route simulation','Compare terrain-aware paths on an interactive study grid.','feature-rock-field.webp','route','02')}${feature('Route regret','Ask what perception errors actually cost a decision.','mars-ridge-detail.webp','regret','03')}</div><div class="reference-facts container"><div><span>01 /</span><strong>Four terrain classes</strong><small>Soil · Bedrock · Sand · Big Rock</small></div><div><span>02 /</span><strong>Route simulation</strong><small>Dijkstra · A* · Regret</small></div><div><span>03 /</span><strong>Scientific reliability</strong><small>Calibration · Selective prediction</small></div><div><span>04 /</span><strong>Real AI4Mars data</strong><small>Verified experiments only</small></div></div>
+<section class="section"><div class="container editorial-grid"><div>${sectionTitle('01 / THE QUESTION','What does a mistaken pixel<br><em class="gold">cost the planner?</em>','A high accuracy score tells only part of the story. AresAtlas studies the connection between terrain predictions, uncertainty, and the consequences for a simulated route planner.')}<a href="#regret" class="btn btn-plain">Explore route regret <span>↗</span></a></div><div class="editorial-visual"><span class="editorial-tag">01 / FROM PERCEPTION TO DECISION</span><div class="editorial-overlay"><span class="micro">Observed terrain → cost model → route</span><span>↗</span></div></div></div></section>
+<section class="section" style="padding-top:20px"><div class="container"><div class="section-kicker">AN EXPERIMENTAL WORKFLOW</div><div class="process-steps"><div class="step"><div class="number">01 — OBSERVE</div><h3>See the terrain.</h3><p>Study Mars rover imagery and distinguish soil, bedrock, sand and large rocks.</p></div><div class="step"><div class="number">02 — ESTIMATE</div><h3>Measure uncertainty.</h3><p>Ask how trustworthy a pixel-level prediction may be, and when to abstain.</p></div><div class="step"><div class="number">03 — PLAN</div><h3>Trace a route.</h3><p>Compare cost-aware routes through an explicit 2D research simulation.</p></div><div class="step"><div class="number">04 — EVALUATE</div><h3>Find what matters.</h3><p>Connect errors in perception to downstream route regret and hazard exposure.</p></div></div></div></section>
+<section class="home-end"><div class="container"><div class="section-kicker">A DIFFERENT KIND OF MACHINE LEARNING DEMO</div><h2>Not just what the model predicts.<br><span class="gold">What happens because of it.</span></h2><a href="#research" class="btn btn-primary">See the research direction ↗</a></div></section></main>${footer()}</div>`}
+function noModelNote(){return `<div class="status-note" id="backend-status">Model inference needs a running AresAtlas FastAPI backend. The local visual study remains available; sample overlays are illustrative, not model predictions.</div>`}
+function terrain(){return `<div class="scrollfade terrain-page">${banner('01 / MARTIAN SURFACE PERCEPTION','Terrain Analysis','Pixel-level terrain understanding, model uncertainty and a closer view of every surface decision.',['ORIGINAL IMAGE','SEGMENTATION','UNCERTAINTY','PIXEL DETAILS'])}<div class="content-main terrain-content"><div class="container"><div class="terrain-layout"><aside class="panel terrain-sidebar"><div class="panel-title">◈ &nbsp; Analysis controls</div><div class="panel-body"><div class="field"><label>Image source</label><select id="terrain-source"><option value="ridge">Rocky basin · illustrative</option><option value="plain">Martian valley · illustrative</option><option value="rover">Rover scene · illustrative</option></select></div><div class="field"><label>Load rover image</label><label for="terrain-file" class="upload-label">＋ &nbsp; Choose an image<input type="file" accept="image/*" id="terrain-file"></label></div><div class="field"><label>Segmentation model</label><select id="terrain-model"><option value="backend">Connected research model</option><option value="illustrative">Illustrative display</option></select></div><button id="run-analysis" class="btn btn-primary" style="width:100%">Run analysis →</button><div class="mini-rule"></div><div class="micro">VISIBLE LAYERS</div>
+<div class="field"><label>Map mode</label><select id="terrain-view-mode"><option value="segmentation">Segmentation overlay</option><option value="entropy">Predictive entropy heatmap</option><option value="cost">Traversability cost heatmap</option><option value="original">Original image only</option></select></div>
+<label class="checkbox"><input type="checkbox" id="overlay-toggle" checked> Color classification overlay</label><label class="checkbox"><input type="checkbox" id="grid-toggle"> Pixel grid</label><div class="field"><label>Overlay opacity <span id="overlay-val">58%</span></label><input type="range" id="overlay-alpha" min="0" max="100" value="58"></div><div class="mini-rule"></div><div class="micro">CLASS LEGEND</div><div class="terrain-legend">${CLASSES.map((c,i)=>`<div><span class="legend-entry"><i class="legend-dot" style="background:${c.color}"></i>${c.name}</span><span>${String(i).padStart(2,'0')}</span></div>`).join('')}<div><span class="legend-entry"><i class="legend-dot" style="background:#57514d"></i>Unlabeled</span><span>255</span></div></div><div class="mini-rule"></div>${noModelNote()}</div></aside><div class="terrain-body"><div class="terrain-gallery"><div class="panel"><div class="panel-title">▧ &nbsp; Original rover image <small>Source imagery</small></div><div class="terrain-figure"><img id="source-preview" src="${ASSET}mars-terrain.webp" alt="Illustrative rocky Martian terrain"><span class="figure-label">ILLUSTRATIVE REFERENCE</span></div><div class="figure-footer">Source resolution <span id="image-dim">—</span></div></div><div class="panel"><div class="panel-title">◈ &nbsp; Terrain segmentation <small id="overlay-title">Color classification study</small></div><canvas id="seg-canvas" class="terrain-canvas" aria-label="Interactive illustrative segmentation layer"></canvas><div class="figure-footer">${CLASSES.map(c=>`<span class="terrain-mini-label"><i style="background:${c.color}"></i>${c.name}</span>`).join('')}</div></div><div class="panel"><div class="panel-title">◇ &nbsp; Uncertainty map <small>Visualization study</small></div><canvas id="entropy-canvas" class="terrain-canvas" aria-label="Illustrative uncertainty visualization"></canvas><div class="figure-footer">Low uncertainty <span class="entropy-scale"></span> High uncertainty</div></div></div><div class="terrain-microstats"><div class="terrain-stat"><span>INPUT</span><b>Original image</b><small>Uploaded or sample imagery</small></div><div class="terrain-stat"><span>PERCEPTION</span><b>4 terrain classes</b><small>Soil · Bedrock · Sand · Big Rock</small></div><div class="terrain-stat"><span>MODEL STATUS</span><b id="overlay-mode">Illustrative only</b><small>Not a trained model prediction</small></div><div class="terrain-stat"><span>INSPECTOR</span><b id="pixel-value">Move over the mask</b><small>Image-space pixel coordinates</small></div></div><div class="terrain-bottom"><section class="panel"><div class="panel-title">Terrain composition <small>Research taxonomy</small></div><div class="panel-body"><div class="terrain-composition"><div class="terrain-donut" aria-label="Four category illustration"></div><div><h3 class="small-h">A closer look at the surface.</h3><p class="small-p">AI4Mars identifies soil, bedrock, sand and large rocks. The image preview is illustrative. Real class frequencies require a connected trained model.</p><div class="legend" style="margin-top:14px">${CLASSES.map(c=>`<span class="legend-entry"><i class="legend-dot" style="background:${c.color}"></i>${c.name}</span>`).join('')}</div></div></div></div></section><section class="panel"><div class="panel-title">Confidence & decision impact</div><div class="panel-body"><img class="strip-photo" src="${ASSET}mars-ridge.webp" alt="Rocky Martian landscape"><h3 class="small-h" style="margin-top:15px">From observation to decisions.</h3><p class="small-p">Real probabilistic outputs and uncertainty calibration become available when the FastAPI model service is connected.</p><a class="btn btn-small" href="#route" style="margin-top:14px">Open Route Simulator →</a></div></section><section class="panel"><div class="panel-title">Pixel inspection <small>Research coordinates</small></div><div class="panel-body"><div class="pixel-zoom-plate"><span class="pixel-cross">＋</span></div><p class="small-p" style="margin-top:13px">Move across the segmentation visualization to inspect a location. Unlabeled and unknown areas are never treated as verified terrain.</p></div></section></div></div></div></div></div>${footer()}</div>`} 
+function routeControls(extra=false){return `<div class="panel"><div class="panel-title">⌁ &nbsp; ${extra?'Regret experiment':'Planning controls'}</div><div class="panel-body"><div class="field"><label>Cost heatmap overlay</label><label class="checkbox" style="margin-top:0"><input type="checkbox" id="route-cost-toggle"> Show cost heatmap overlay</label></div>
+<div class="field"><label>Overlay opacity <span id="route-cost-val">35%</span></label><input type="range" id="route-cost-alpha" min="0" max="80" value="35"></div>
+<div class="field"><label>Cost heatmap overlay</label><label class="checkbox" style="margin-top:0"><input type="checkbox" id="route-cost-toggle"> Show cost heatmap overlay</label></div>
+<div class="field"><label>Overlay opacity <span id="route-cost-val">35%</span></label><input type="range" id="route-cost-alpha" min="0" max="80" value="35"></div>
+<div class="field"><label>Terrain cost model</label><select id="cost-presets"><option value="standard">Balanced terrain cost</option><option value="hazard">Hazard-sensitive</option><option value="uniform">Uniform travel cost</option></select></div><div class="field"><label>Uncertainty penalty · λ <span id="lambda-val">0.8</span></label><input type="range" id="lambda" min="0" max="40" value="8"></div><div class="field"><label>Rock class penalty · <span id="rock-val">6.5</span></label><input type="range" id="rock-cost" min="20" max="100" value="65"></div><div class="micro">INTERACTION</div><p class="subtle" style="margin:12px 0 15px">Click once on the map to change the start. Click again to choose a destination.</p><button class="btn btn-primary" id="replan" style="width:100%">Recalculate routes ↗</button><button class="btn" id="reset-map" style="width:100%;margin-top:8px">Reset study</button><div class="mini-rule"></div><div class="status-note">This is a synthetic grid benchmark. Route lengths are grid units—not measured Mars distances.</div></div></div>`}
+function routeMap(){return `<div class="panel"><div class="panel-title">Terrain cost study <small>Interactive route comparison · synthetic grid</small></div><div class="route-map" id="route-map"><canvas id="route-canvas" aria-label="Interactive synthetic 2D route planning grid"></canvas><div class="map-key"><div><i class="map-color" style="background:#f0dbc6"></i>Oracle route</div><div><i class="map-color" style="background:#c17b5a"></i>Predicted route</div><div><i class="map-color" style="background:#a9b9a2"></i>Uncertainty-aware</div></div></div><div class="figure-footer"><span>Click terrain to set start/goal · Paths calculated in browser</span><span id="route-coord">Start (7,30) → Goal (67,8)</span></div></div>`}
+function routeSide(){return `<div class="side-stack"><div class="panel"><div class="panel-title">Route comparison <small>True simulated cost</small></div><div class="panel-body"><div id="route-summary"></div></div></div><div class="panel"><img class="strip-photo" src="${ASSET}mars-rover.webp" alt="Illustrative rover on Mars"><div class="panel-body"><h3 class="small-h">Perception → planning</h3><p class="small-p">Three planners share the same test grid. The oracle knows simulated ground truth; others only see estimated terrain and uncertainty.</p></div></div></div>`}
+function routePage(isRegret=false){return `<div class="scrollfade">${banner(isRegret?'04 / DECISION-AWARE EVALUATION':'02 / NAVIGATION SIMULATION',isRegret?'Route Regret Lab':'Route Laboratory',isRegret?'When a model mistakes terrain, what does that cost a route planner? Compare routes under one shared ground-truth cost objective.':'Choose a start and destination. Compare shortest cost, perception-based planning, and uncertainty-aware routes on a controlled synthetic terrain grid.',isRegret?['REGRET STUDY','ORACLE','ABLATIONS','LIMITATIONS']:['TERRAIN COST','ROUTE COMPARISON','MODEL RISK','GRID SETTINGS'])}<div class="content-main"><div class="container"><div class="route-controls">${routeControls(isRegret)}${routeMap()}${routeSide()}</div><div class="stat-row" id="route-stats" style="margin-top:18px"></div><div class="tile-two" style="margin-top:18px">${panel('Why measure route regret?',`<h3 class="small-h">A metric connected to a decision.</h3><p class="small-p">The regret of a predicted route is its cost when evaluated on the reference grid minus the cost of the oracle route on that same grid. This demonstration deliberately injects perception errors into a synthetic terrain map to test the calculation, not to claim performance on AI4Mars.</p>`)}${panel('Experiment boundaries',`<ul class="mini-list"><li><span>Data used</span><strong>Generated synthetic grid</strong></li><li><span>Distance unit</span><strong>Grid steps</strong></li><li><span>Physical slope/depth</span><strong>Not modeled</strong></li><li><span>Route evaluation</span><strong>Computed, reproducible</strong></li></ul>`)}</div></div></div>${footer()}</div>`}
+function uncertainty(){return `<div class="scrollfade uncertainty-premium">
+<section class="uncertainty-masthead"><div class="uncertainty-hero-backdrop"></div><div class="container uncertainty-hero-content"><div class="micro">RESEARCH LAB / PREDICTIVE RELIABILITY</div><h1>Uncertainty <em>Lab.</em></h1><p>Understand what the model knows, quantify what it doesn't, and explore the trade-off between confident predictions and coverage.</p><div class="hero-actions"><a href="#regret" class="btn btn-primary">Explore route impact <span>→</span></a><a href="#research" class="btn">Read the methodology <span>↗</span></a></div></div><span class="uncertainty-hero-fine">01 / CONFIDENCE &nbsp;&nbsp; 02 / CALIBRATION &nbsp;&nbsp; 03 / SELECTIVE PREDICTION</span></section>
+<div class="content-main research-ambient"><div class="container"><div class="simulation-ribbon"><span class="ribbon-dot"></span><strong>EXPERIMENTAL DEMONSTRATION</strong><span>Risk–coverage charts below use deterministic synthetic confidence values. Model evaluation requires verified held-out predictions.</span></div>
+<div class="premium-metric-strip">
+<div class="premium-metric"><span>RETAINED COVERAGE</span><b id="metric-coverage">85%</b><small>Adjust the selective threshold</small></div>
+<div class="premium-metric"><span>SELECTIVE RISK</span><b id="metric-selectiverisk">—</b><small>Synthetic pixel error rate</small></div>
+<div class="premium-metric"><span>ABSTENTION</span><b id="metric-abstain">15%</b><small>Fraction of predictions hidden</small></div>
+<div class="premium-metric"><span>REAL CALIBRATION</span><b>Pending</b><small>Waiting for model predictions</small></div>
+<div class="premium-metric"><span>ROUTE REGRET</span><b>Lab ↗</b><small><a href="#regret">Open verified comparison</a></small></div></div>
+<div class="uncertainty-workspace">
+<section class="panel uncertainty-images"><div class="panel-title">◇ &nbsp; Confidence maps <small>Illustrative image processing</small></div><div class="panel-body"><div class="map-switch"><button class="active" id="unc-view-confidence">Confidence</button><button id="unc-view-entropy">Entropy</button></div><div class="unc-image"><img id="unc-map-image" src="${ASSET}sample-terrain.webp" alt="Clean illustrative rocky Mars terrain" /><div class="unc-color-layer" id="unc-color-layer"></div><div class="unc-image-label">SCHEMATIC VISUALIZATION · NOT TRAINED ML</div></div><div class="heat-scale"><span>Low</span><i></i><span>High uncertainty</span></div><div class="copy-note">Real confidence/entropy images are displayed only when supplied by a connected inference backend.</div></div></section>
+<section class="panel premium-selection"><div class="panel-title">◈ &nbsp; Selective prediction</div><div class="panel-body"><p class="small-p">What if the model could choose not to answer on its most uncertain pixels?</p><div class="field"><label>Target coverage <strong id="coverage-val">85%</strong></label><input id="coverage-slider" type="range" min="50" max="100" value="85" step="5" /></div><div class="selective-value"><span>Retained pixels</span><b id="coverage-big">85%</b></div><div class="micro">HOW THIS WORKS</div><p id="coverage-explain" class="subtle">Computed on a synthetic demonstration dataset.</p><button id="uncert-select" class="btn btn-primary" style="width:100%;margin-top:18px">Adjust coverage →</button></div></section>
+<section class="panel uncertainty-chart"><div class="panel-title">⌁ &nbsp; Risk–coverage curve <small>Computed from illustrative data</small></div><div class="panel-body"><svg id="risk-chart" class="svg-chart" viewBox="0 0 720 360" aria-label="Calculated synthetic risk coverage chart"></svg><div class="legend"><span class="legend-entry"><i class="legend-dot" style="background:#ca865e"></i>Confidence ranking</span><span class="legend-entry"><i class="legend-dot" style="background:#a7a599"></i>Random baseline</span></div></div></section>
+<section class="panel calibration-card" id="calibration-card"><div class="panel-title">▥ &nbsp; Reliability analysis</div><div class="panel-body"><svg id="calibration-chart" class="svg-chart" viewBox="0 0 340 270" aria-label="Binned reliability chart on synthetic confidence values"></svg><div class="copy-note">Bins are calculated from synthetic data. Real ECE requires evaluated model predictions and masks.</div><button id="uncert-reliability" class="btn btn-small" style="width:100%;margin-top:12px">Inspect calibration →</button></div></section>
+</div>
+<section class="uncertainty-route-impact"><div><div class="micro">THE DOWNSTREAM QUESTION</div><h2>What does uncertainty<br><em class="gold">cost a route?</em></h2><p>Confidence is meaningful only when it changes a decision. Compare the predicted route and uncertainty-aware strategy on a controlled terrain-cost simulation.</p><a class="btn btn-primary" href="#regret">Open Route Regret Lab <span>→</span></a></div><div class="uncertainty-visual-pair"><div class="route-schematic"><span class="visual-label">01 / BASELINE PATH</span><svg viewBox="0 0 460 170" aria-label="Illustrative route path, not physical rover motion"><path d="M22 145 C100 124 110 80 196 102 S338 50 436 19" fill="none" stroke="#e0d1be" stroke-width="3" stroke-dasharray="6 7"/><circle cx="22" cy="145" r="6" fill="#e5c9a3"/><circle cx="436" cy="19" r="6" fill="#e5c9a3"/></svg><small>Schematic view · simulated objective</small></div><div class="route-schematic"><span class="visual-label">02 / UNCERTAINTY-AWARE PATH</span><svg viewBox="0 0 460 170" aria-label="Illustrative uncertainty aware path"><path d="M22 145 C112 135 164 160 230 106 S348 70 436 19" fill="none" stroke="#c98b68" stroke-width="3"/><circle cx="22" cy="145" r="6" fill="#c98b68"/><circle cx="436" cy="19" r="6" fill="#c98b68"/></svg><small>See Route Regret Lab for real computed grid costs</small></div></div></section>
+</div></div>${footer()}</div>`}
+function metricCard(label,value,sub){return `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div><div class="stat-sub">${sub}</div></div>`}
+function models(){return `<div class="scrollfade model-reference-page">${banner('05 / MODEL LABORATORY','Model Evaluation','Inspect segmentation accuracy, hazard detection, error structure and model reliability.',['OVERVIEW','EXPERIMENTS','CLASS ERRORS','BENCHMARKS'])}<div class="content-main"><div class="container"><div class="model-reference-grid"><aside class="panel"><div class="panel-title">◈ &nbsp; Model selection</div><div class="panel-body"><div class="field"><label>Model checkpoint</label><select id="eval-model"><option value="none">No trained checkpoint connected</option></select></div><div class="field"><label>Expert reference labels</label><select id="eval-split"><option>test_min3 · strict</option><option>test_min2 · intermediate</option><option>test_min1 · broader coverage</option></select></div><button class="btn btn-primary" id="eval-refresh" style="width:100%">Load verified metrics →</button><button class="btn btn-small" id="preview-metrics" style="width:100%;margin-top:9px">Show synthetic layout demo</button><div class="mini-rule"></div><div class="micro">EXPERIMENT STATUS</div><p class="subtle" style="margin-top:10px" id="eval-status">No evaluation run connected. Enable the labeled demonstration to explore the chart controls.</p><div class="mini-rule"></div><nav class="model-mini-nav"><a href="#lab">Training runs ↗</a><a href="#uncertainty">Calibration & confidence ↗</a><a href="#regret">Route regret ↗</a><a href="#research">Research methods ↗</a></nav></div></aside><div class="model-body"><div class="metric-cards" id="evaluation-metrics">${metricCard('Mean IoU','—','Awaiting experiment')}${metricCard('Sand recall','—','Awaiting experiment')}${metricCard('Big-rock recall','—','Awaiting experiment')}${metricCard('Cost-weighted error','—','Awaiting experiment')}</div><div class="model-plots"><section class="panel"><div class="panel-title">Confusion matrix <small>Four-class semantic labeling</small></div><div class="panel-body"><div id="confusion-container" class="chart-placeholder"><div class="empty-chart-lines"></div><div class="chart-placeholder-note">Awaiting evaluated model<br><small>Use synthetic preview to inspect graph</small></div></div></div></section><section class="panel"><div class="panel-title">Per-class IoU <small>Grouped by terrain</small></div><div class="panel-body" id="per-class-container"><div class="bar-placeholder">${CLASSES.map(c=>`<div><label>${c.name}</label><span class="bar-bg"></span><small>—</small></div>`).join('')}</div></div></section><section class="panel"><div class="panel-title">Training curves <small>Train / validation</small></div><div class="panel-body"><svg id="train-curves" class="svg-chart" viewBox="0 0 420 240" aria-label="Training curve graph"></svg><p class="subtle">Training logs require a saved experiment or a clearly labeled demonstration.</p></div></section><section class="panel"><div class="panel-title">Inference performance <small>Latency vs accuracy</small></div><div class="panel-body"><svg id="latency-chart" class="svg-chart" viewBox="0 0 420 240" aria-label="Inference latency scatter plot"></svg><p class="subtle">Hardware and inference batch must be recorded for valid results.</p></div></section></div><div class="model-bottom"><section class="panel"><div class="panel-title">Qualitative inspection <small>Real input imagery</small></div><div class="panel-body"><div class="model-image-comparison"><img src="${ASSET}mars-ridge.webp" alt="Illustrative terrain"><img src="${ASSET}mars-terrain.webp" alt="Illustrative terrain"></div><p class="subtle">No trained mask or label comparison is claimed until corresponding dataset samples and predictions are available.</p></div></section><section class="panel"><div class="panel-title">Failure taxonomy <small>What should be inspected?</small></div><div class="panel-body"><ul class="mini-list"><li><span>Sand mistaken for soil</span><strong>Hazard recall</strong></li><li><span>Big rock mistaken for bedrock</span><strong>Misclassification cost</strong></li><li><span>Shadow and texture ambiguity</span><strong>Failure analysis</strong></li><li><span>Unlabeled pixels</span><strong>Excluded from metrics</strong></li></ul></div></section></div></div></div></div></div>${footer()}</div>`}
+function dataset(){return `<div class="scrollfade">${banner('06 / SOURCE MATERIAL','The AI4Mars Dataset','A transparent view into the rover imagery, semantic label taxonomy, and expert annotation protocol behind terrain-aware vision research.',['PROVENANCE','CLASSES','LABEL QUALITY'])}<div class="content-main"><div class="container"><div class="story-hero" style="min-height:295px;background-image:linear-gradient(90deg,#130f0ef7,#150e0d74),url('assets/mars-terrain.webp')"><div class="micro">NASA JPL / ORIGINAL DATASET</div><h2>Four classes.<br>A new way to study Mars.</h2><p>AI4Mars contains crowdsourced terrain annotations and expert-labeled evaluation data. The frontend deliberately keeps its visual artwork separate from authentic scientific samples.</p></div><div class="space"></div><div class="dataset-cards">${CLASSES.map((c,i)=>`<div class="dataset-card"><img src="${ASSET}${['mars-terrain.webp','mars-ridge.webp','mars-horizon.webp','mars-rover.webp'][i]}" alt="Illustrative terrain detail"><div class="copy"><div class="micro" style="margin-bottom:10px">CLASS 0${i}</div><h3>${c.name}</h3><p>${['Fine-grained regolith and soil-like surfaces.','Exposed, comparatively cohesive rocky material.','Loose deposits and sand-rich terrain.','Large rock obstacles identified by size criteria.'][i]}</p></div></div>`).join('')}</div><div class="tile-two" style="margin-top:20px"><div class="panel"><div class="panel-title">Dataset facts</div><div class="panel-body"><ul class="mini-list"><li><span>Original research</span><strong>Swan et al., CVPRW 2021</strong></li><li><span>Curiosity-focused HF version</span><strong>≈18.1k training images</strong></li><li><span>Semantic classes</span><strong>4 + ignore</strong></li><li><span>Ignore label</span><strong>255 (verify in loader)</strong></li><li><span>Expert subsets</span><strong>min1 / min2 / min3</strong></li></ul></div></div><div class="panel"><div class="panel-title">Data provenance</div><div class="panel-body"><h3 class="small-h">The real labels matter.</h3><p class="small-p">The test_min1/2/3 sets refer to different annotation-support criteria over overlapping imagery. They should not be counted as independent test datasets. Image-wide labels may be sparse.</p><p style="margin-top:20px"><a class="btn btn-small" target="_blank" rel="noopener" href="https://huggingface.co/datasets/hassanjbara/AI4MARS">Explore Hugging Face ↗</a> <a class="btn btn-small" target="_blank" rel="noopener" href="https://zenodo.org/records/15995036">Expanded release ↗</a></p></div></div></div></div></div>${footer()}</div>`}
+function lab(){return `<div class="scrollfade">${banner('07 / EXPERIMENT WORKSPACE','Model Laboratory','An organized home for model checkpoints, training configurations, reproducibility and research experiments.',['RUN REGISTRY','CHECKPOINTS','ARTIFACTS'])}<div class="content-main"><div class="container"><div class="tile-two"><div class="panel"><div class="panel-title">Experiment registry <small>Live backend connection required</small></div><div class="panel-body" id="experiments-list"><div class="empty-block"><span style="font-size:30px;color:#bb8c6b">◇</span><h3>No experiments connected</h3><p>Real experiment cards appear here when the FastAPI backend provides completed training runs. We don't prefill fictitious training histories.</p><button id="load-experiments" class="btn btn-small btn-primary">Check available runs ↗</button></div></div></div><div class="panel"><div class="panel-title">Research pipeline</div><div class="panel-body"><img src="${ASSET}mars-rover.webp" alt="Martian rover illustration" class="strip-photo" style="height:175px"><ul class="mini-list"><li><span>01 — Audit</span><strong>Validate masks & splits</strong></li><li><span>02 — Train</span><strong>SegFormer baseline</strong></li><li><span>03 — Measure</span><strong>Hazard / uncertainty</strong></li><li><span>04 — Evaluate</span><strong>Downstream regret</strong></li></ul></div></div></div><div class="story-hero" style="margin-top:20px;min-height:245px;background-image:linear-gradient(90deg,#130f0ef3,#150e0d6b),url('assets/mars-horizon.webp')"><div class="micro">DOCUMENT EVERY EXPERIMENT</div><h2 style="font-size:42px">Scientific results begin with<br>reproducible execution.</h2><p>No claimed training curve, benchmark, or performance number appears here without corresponding data.</p></div></div></div>${footer()}</div>`}
+function research(){return `<div class="scrollfade research-premium">
+<section class="research-masthead"><div class="container research-hero-grid"><div><div class="micro">RESEARCH / FINDINGS</div><h1>Can we plan better<br>on Mars by modeling<br><em>uncertainty and<br>route regret?</em></h1><p>From visual perception to downstream decisions: a reproducible research platform exploring segmentation, uncertainty, and simulated cost-aware routing.</p><div class="hero-actions"><a href="#regret" class="btn btn-primary">Explore route regret <span>→</span></a><a href="#models" class="btn">Inspect experiments <span>↗</span></a></div></div><aside class="research-resource-stack"><div class="micro">RESEARCH RESOURCES</div><a href="#regret"><span>◇</span><strong>Route regret study</strong><small>Calculated grid comparison</small><em>↗</em></a><a href="#dataset"><span>▧</span><strong>AI4Mars dataset</strong><small>Data provenance & classes</small><em>↗</em></a><a href="#models"><span>▥</span><strong>Model evaluation</strong><small>Metrics, losses & confusion</small><em>↗</em></a><a href="#lab"><span>⌁</span><strong>Experiment registry</strong><small>Saved runs, when available</small><em>↗</em></a></aside></div></section>
+<div class="content-main research-ambient"><div class="container"><nav class="research-jump" aria-label="Research sections"><a href="#regret">Route regret</a><a href="#uncertainty">Selective prediction</a><a href="#models">Hazard-first evaluation</a><a href="#dataset">Data</a><a href="#lab">Experiments</a><a href="#research-methodology">Methodology</a><a href="#research-limits">Limitations</a></nav>
+<div class="research-feature-grid">
+<a class="study-tile" href="#regret"><span class="micro">01 / DECISION IMPACT</span><h3>Route regret</h3><p>Measure the extra ground-truth cost caused by an inaccurate terrain prediction.</p><img src="${ASSET}feature-rock-field.webp" alt="Mars rocky terrain, illustrative art"/><span class="study-arrow">↗</span></a>
+<a class="study-tile" href="#uncertainty"><span class="micro">02 / RELIABILITY</span><h3>Selective prediction</h3><p>Quantify the trade-off between abstaining from uncertainty and retained prediction coverage.</p><img src="${ASSET}feature-basin.webp" alt="Rugged Mars basin, illustrative art"/><span class="study-arrow">↗</span></a>
+<a class="study-tile" href="#models"><span class="micro">03 / HAZARDS</span><h3>Hazard-first metrics</h3><p>Evaluate terrain confusion by its hypothetical downstream cost—not just pixel accuracy.</p><img src="${ASSET}mars-ridge-detail.webp" alt="Martian rocky ridge, illustrative art"/><span class="study-arrow">↗</span></a></div>
+<div class="research-fact-row"><div><strong>Four classes</strong><span>Soil · Bedrock · Sand · Big Rock</span></div><div><strong>2D grid model</strong><span>Explicit costs, limited geometry</span></div><div><strong>Held-out labels</strong><span>Expert test annotation protocol</span></div><div><strong>Open methods</strong><span>Source and reproducibility first</span></div></div>
+<div class="research-lower-grid" id="research-methodology"><section class="panel"><div class="panel-title">◇ &nbsp; Research methodology</div><div class="panel-body"><p class="small-p">An experimental chain connecting perception to routing decisions.</p><div class="method-chain"><div><span>01</span><strong>Terrain perception</strong><small>Four-class semantic segmentation</small></div><div><span>02</span><strong>Prediction reliability</strong><small>Entropy · selective coverage</small></div><div><span>03</span><strong>Cost-aware routing</strong><small>Dijkstra · admissible A*</small></div><div><span>04</span><strong>Ground-truth regret</strong><small>Matched grid objective and domain</small></div></div></div></section>
+<section class="panel"><div class="panel-title">▧ &nbsp; Dataset notes</div><div class="panel-body"><div class="dataset-photo"><img src="${ASSET}feature-basin.webp" alt="Illustrative terrain geology"/></div><h3 class="small-h">AI4Mars / NASA JPL</h3><p class="small-p">Crowdsourced terrain categories and expert-labeled evaluation regions. Missing pixels are not ground truth. The min1, min2 and min3 levels use overlapping underlying test images.</p><a class="btn-link" href="#dataset">Explore dataset details ↗</a></div></section>
+<section class="panel"><div class="panel-title">▥ &nbsp; Evidence & findings</div><div class="panel-body"><div class="status-note">No verified research finding has been loaded. Connect your actual training and evaluation artifacts before presenting a numerical claim.</div><div class="mini-rule"></div><ul class="mini-list"><li><span>Segmentation</span><strong>Awaiting verified run</strong></li><li><span>Risk–coverage</span><strong>Synthetic chart available</strong></li><li><span>Route regret</span><strong>2D synthetic comparison</strong></li><li><span>Cross-rover transfer</span><strong>Future study</strong></li></ul></div></section></div>
+<div class="research-bottom-grid"><section class="panel"><div class="panel-title">⌁ &nbsp; Decision impact <small>Schematic context</small></div><div class="panel-body"><a class="research-route-preview" href="#regret"><img src="${ASSET}mars-terrain-expanse.webp" alt="Wide Martian terrain visualization background"/><svg viewBox="0 0 800 260" preserveAspectRatio="none" aria-hidden="true"><path d="M42 220 C198 220 197 80 353 120 S620 105 760 25" fill="none" stroke="#c58b68" stroke-width="4"/><path d="M42 220 C140 245 290 235 400 178 S618 70 760 25" fill="none" stroke="#ead0ae" stroke-width="3" stroke-dasharray="9 12"/></svg><span>Open interactive route-regret computation ↗</span></a></div></section>
+<section class="panel" id="research-limits"><div class="panel-title">⚠ &nbsp; Scientific limitations</div><div class="panel-body"><ul class="research-limit-list"><li>Single RGB images do not recover metric slope, terrain geometry, or real rover dynamics.</li><li>Route costs are research assumptions, not measured drive energy or safety outcomes.</li><li>Incomplete terrain labels restrict valid ground-truth route comparison.</li><li>Uncertainty penalties may increase no-route frequency and need independent validation.</li><li>Source images here are cinematic illustrations, not NASA photographs.</li></ul></div></section></div>
+<div class="research-sources"><div class="micro">PRIMARY SOURCES</div><a href="https://data.nasa.gov/dataset/ai4mars-a-dataset-for-terrain-aware-autonomous-driving-on-mars" target="_blank" rel="noopener">NASA / AI4Mars dataset ↗</a><a href="https://zenodo.org/records/15995036" target="_blank" rel="noopener">AI4Mars expanded release ↗</a><a href="https://huggingface.co/datasets/hassanjbara/AI4MARS" target="_blank" rel="noopener">Hugging Face dataset ↗</a></div>
+</div></div>${footer()}</div>`}
+const Pages={home,terrain,route:()=>routePage(false),regret:()=>routePage(true),uncertainty,models,dataset,lab,research};
+function go(route){location.hash=route}
+function render(){const next=location.hash.slice(1).split('?')[0]||'home';currentRoute=Pages[next]?next:'home';document.title=`${currentRoute==='home'?'Mars Terrain Intelligence':([...(ROUTES),...MORE].find(x=>x[0]===currentRoute)||['','AresAtlas'])[1]} — AresAtlas`;ROOT.innerHTML=header(currentRoute)+Pages[currentRoute]();document.querySelector('#menu-toggle').addEventListener('click',()=>{const n=document.querySelector('.nav'),b=document.querySelector('#menu-toggle');n.classList.toggle('open');b.setAttribute('aria-expanded',n.classList.contains('open'))});document.querySelector('#more-btn').addEventListener('click',()=>{document.querySelector('#more-wrap').classList.toggle('open')});if(['route','regret'].includes(currentRoute))initRoute();if(currentRoute==='terrain')initTerrain();if(currentRoute==='uncertainty')initUncertainty();if(currentRoute==='models')initModels();if(currentRoute==='lab')initLab();window.scrollTo({top:0,behavior:'instant'});}
+window.addEventListener('hashchange',render);
+window.addEventListener('resize',()=>{if(['route','regret'].includes(currentRoute))drawRoute();if(currentRoute==='terrain')refreshTerrainCanvas()});
+function toast(message){const t=document.querySelector('#toast');t.textContent=message;t.classList.add('show');clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>t.classList.remove('show'),4000)}
+/* Reproducible local research simulation. The demonstration is synthetic and labeled as such. */
+const GW=76, GH=42;
+function rand2(x,y){let n=Math.sin(x*127.1+y*311.7+39.4)*43758.5453123;return n-Math.floor(n)}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function terrainSynth(){const truth=[],pred=[],unc=[];for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){
+ const v=.51+.20*Math.sin(x*.145+y*.16)+.18*Math.cos(y*.22-x*.09)+.10*Math.sin((x+y)*.36)+.06*(rand2(x,y)-.5);
+ const ridge=Math.hypot((x-47)*1.0,(y-22)*1.3)<9;
+ let k=v<.34?0:v<.56?1:v<.77?2:3;
+ if(ridge&&Math.sin(x*.46+y*.33)>.37)k=3;
+ const uncertainty=clamp(.19+.35*Math.abs(Math.sin(x*.18)*Math.cos(y*.28))+.26*(Math.abs(v-.34)<.09||Math.abs(v-.56)<.09||Math.abs(v-.77)<.09?1:0)+.16*rand2(x+100,y),0,1);
+ let p=k;
+ const errorChance=clamp(.045+.38*uncertainty,0,.54);
+ if(rand2(x+37,y+72)<errorChance){p=(k+(rand2(x+5,y+16)<.6?1:3))%4}
+ truth.push(k);pred.push(p);unc.push(uncertainty);
+ }return{truth,pred,unc}}
+class Heap{constructor(){this.a=[]}push(item){const a=this.a;a.push(item);let i=a.length-1;while(i>0){const p=(i-1)>>1;if(a[p].priority<=item.priority)break;a[i]=a[p];i=p;}a[i]=item;}pop(){const a=this.a;if(!a.length)return null;const top=a[0],last=a.pop();if(a.length){let i=0;while(true){let c=i*2+1;if(c>=a.length)break;if(c+1<a.length&&a[c+1].priority<a[c].priority)c++;if(a[c].priority>=last.priority)break;a[i]=a[c];i=c;}a[i]=last;}return top;}get length(){return this.a.length}}
+const DIRS=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+function findPath(grid,start,goal,costs,unc=null,lambda=0,heuristic=true){const n=GW*GH,dist=new Float64Array(n).fill(Infinity),prev=new Int32Array(n).fill(-1),h=new Heap(),visited=new Uint8Array(n);
+ const goalX=goal%GW,goalY=(goal/GW)|0;
+ dist[start]=0;h.push({idx:start,priority:0});
+ while(h.length){const popped=h.pop(),v=popped.idx;if(visited[v])continue;visited[v]=1;if(v===goal)break;const x=v%GW,y=(v/GW)|0;
+ for(const [dx,dy] of DIRS){const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=GW||ny>=GH)continue;const to=ny*GW+nx;const d=(dx&&dy)?Math.SQRT2:1;const step=d*(costs[grid[to]]+(unc?lambda*unc[to]:0));const alt=dist[v]+step;
+ if(alt<dist[to]){dist[to]=alt;prev[to]=v;const est=heuristic?Math.hypot(nx-goalX,ny-goalY)*Math.min(...costs):0;h.push({idx:to,priority:alt+est});}}
+ }
+ if(!isFinite(dist[goal]))return{path:[],cost:Infinity};const path=[];let cur=goal;while(cur>=0){path.push(cur);cur=prev[cur];}path.reverse();return{path,cost:dist[goal]};}
+function evaluatePath(path,truth,costs){if(!path.length)return Infinity;let v=0;for(let i=1;i<path.length;i++){const d=Math.abs(path[i]%GW-path[i-1]%GW)+Math.abs(((path[i]/GW)|0)-((path[i-1]/GW)|0))===2?Math.SQRT2:1;v+=d*costs[truth[path[i]]];}return v}
+function pathHighRisk(path,truth){if(!path.length)return 0;return 100*path.filter(id=>truth[id]>=2).length/path.length}
+function routeState(preset='standard',lambda=.8,rock=6.5,start=30*GW+7,goal=8*GW+67){const {truth,pred,unc}=terrainSynth();const costs=preset==='uniform'?[1,1,1,1]:preset==='hazard'?[1,1.8,5,rock*1.3]:[1,1.5,3.2,rock];return{truth,pred,unc,costs,lambda,start,goal,preset,clickStage:0}}
+function doPlan(){if(!routeContext)return;const r=routeContext;r.oracle=findPath(r.truth,r.start,r.goal,r.costs);r.predicted=findPath(r.pred,r.start,r.goal,r.costs);r.aware=findPath(r.pred,r.start,r.goal,r.costs,r.unc,r.lambda);r.gtCosts=[r.oracle,r.predicted,r.aware].map(p=>evaluatePath(p.path,r.truth,r.costs));const b=r.gtCosts[0],p=r.gtCosts[1],a=r.gtCosts[2];r.regret=Math.max(0,p-b);r.awareRegret=Math.max(0,a-b);const fmt=x=>Number.isFinite(x)?x.toFixed(1):'No route';const pct=x=>Number.isFinite(x)&&b>0?`${(100*x/b).toFixed(1)}%`:'—';document.querySelector('#route-summary').innerHTML=`<ul class="mini-list"><li><span><i class="tcolor" style="background:#f0dbc6"></i>Oracle / reference</span><strong>${fmt(b)}</strong></li><li><span><i class="tcolor" style="background:#c17b5a"></i>Prediction-based</span><strong>${fmt(p)}</strong></li><li><span><i class="tcolor" style="background:#a9b9a2"></i>Uncertainty-aware</span><strong>${fmt(a)}</strong></li></ul><div class="mini-rule"></div><div class="muted-tag">PREDICTED ROUTE REGRET</div><div class="big-result">${fmt(r.regret)}</div><div class="subtle">${pct(r.regret)} above oracle true cost</div><div class="mini-rule"></div><div class="muted-tag">UNCERTAINTY-AWARE REGRET</div><div class="big-result" style="font-size:34px">${fmt(r.awareRegret)}</div><div class="subtle">${pct(r.awareRegret)} above oracle true cost</div>`;
+ document.querySelector('#route-stats').innerHTML=`${metricCard('Oracle grid cost',fmt(b),'Optimal on true classes')}${metricCard('Predicted regret',fmt(r.regret),pct(r.regret)+' above oracle')}${metricCard('Uncertainty-aware regret',fmt(r.awareRegret),pct(r.awareRegret)+' above oracle')}${metricCard('Hazard exposure',pathHighRisk(r.aware.path,r.truth).toFixed(1)+'%','Uncertainty route · synthetic')}`;
+ document.querySelector('#route-coord').textContent=`Start (${r.start%GW},${(r.start/GW)|0}) → Goal (${r.goal%GW},${(r.goal/GW)|0})`;drawRoute()}
+function drawRoute(){const c=document.querySelector('#route-canvas');if(!c||!routeContext)return;const r=routeContext,el=c.parentElement,rect=el.getBoundingClientRect();if(!rect.width||!rect.height)return;const dpr=Math.min(2,window.devicePixelRatio||1);c.width=Math.round(rect.width*dpr);c.height=Math.round(rect.height*dpr);const ctx=c.getContext('2d');ctx.scale(dpr,dpr);const w=rect.width,h=rect.height,cw=w/GW,ch=h/GH;
+ ctx.fillStyle='rgba(13,11,11,.34)';ctx.fillRect(0,0,w,h);
+ const mask=document.createElement('canvas');mask.width=GW;mask.height=GH;const mc=mask.getContext('2d');for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const idx=y*GW+x;const colors=['rgba(118,92,78,.20)','rgba(103,99,105,.26)','rgba(195,126,73,.29)','rgba(121,56,47,.38)'];mc.fillStyle=colors[r.pred[idx]];mc.fillRect(x,y,1,1);if(r.unc[idx]>.76){mc.fillStyle='rgba(205,169,142,.14)';mc.fillRect(x,y,1,1)}}ctx.imageSmoothingEnabled=true;ctx.drawImage(mask,0,0,w,h);
+ ctx.lineWidth=.6;ctx.strokeStyle='rgba(251,203,159,.09)';for(let x=0;x<=GW;x+=5){ctx.beginPath();ctx.moveTo(x*cw,0);ctx.lineTo(x*cw,h);ctx.stroke()}for(let y=0;y<=GH;y+=5){ctx.beginPath();ctx.moveTo(0,y*ch);ctx.lineTo(w,y*ch);ctx.stroke()}
+ const colors=['#f0dbc6','#cb815b','#afc5a9'];[r.oracle,r.predicted,r.aware].forEach((pr,i)=>{if(!pr||!pr.path.length)return;ctx.beginPath();pr.path.forEach((idx,j)=>{let x=((idx%GW)+.5)*cw,y=(((idx/GW)|0)+.5)*ch;j?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.lineWidth=i===0?2.1:2.4;ctx.strokeStyle=colors[i];ctx.lineJoin='round';ctx.globalAlpha=i===0?.9:1;ctx.setLineDash(i===2?[5,5]:i===1?[2,3]:[]);ctx.stroke();ctx.globalAlpha=1;ctx.setLineDash([])});
+ [[r.start,'S'],[r.goal,'G']].forEach(([idx,label])=>{const x=((idx%GW)+.5)*cw,y=(((idx/GW)|0)+.5)*ch;ctx.fillStyle='#241915';ctx.beginPath();ctx.arc(x,y,11,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#e7c7a7';ctx.lineWidth=1.5;ctx.stroke();ctx.fillStyle='#f7e3cc';ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,x,y+.5)});
 }
+function initRoute(){routeContext=routeState();document.querySelector('#route-cost-toggle')?.addEventListener('change',drawRoute);document.querySelector('#route-cost-alpha')?.addEventListener('input',e=>{document.querySelector('#route-cost-val').textContent=e.target.value+'%';drawRoute()});document.querySelector('#cost-presets').addEventListener('change',e=>{routeContext.preset=e.target.value;const v=e.target.value;routeContext.costs=v==='uniform'?[1,1,1,1]:v==='hazard'?[1,1.8,5,routeContext.costs[3]*1.3]:[1,1.5,3.2,routeContext.costs[3]];doPlan()});document.querySelector('#lambda').addEventListener('input',e=>{routeContext.lambda=Number(e.target.value)/10;document.querySelector('#lambda-val').textContent=routeContext.lambda.toFixed(1);doPlan()});document.querySelector('#rock-cost').addEventListener('input',e=>{const cost=Number(e.target.value)/10;document.querySelector('#rock-val').textContent=cost.toFixed(1);routeContext.costs[3]=cost;doPlan()});document.querySelector('#replan').addEventListener('click',()=>{doPlan();toast('Routes recalculated on the synthetic terrain grid.')});document.querySelector('#reset-map').addEventListener('click',()=>{routeContext=routeState();document.querySelector('#lambda').value=8;document.querySelector('#lambda-val').textContent='0.8';document.querySelector('#rock-cost').value=65;document.querySelector('#rock-val').textContent='6.5';document.querySelector('#cost-presets').value='standard';doPlan()});document.querySelector('#route-canvas').addEventListener('click',e=>{const rect=e.currentTarget.getBoundingClientRect();const x=clamp(Math.floor((e.clientX-rect.left)/rect.width*GW),0,GW-1),y=clamp(Math.floor((e.clientY-rect.top)/rect.height*GH),0,GH-1),idx=y*GW+x;if(routeContext.clickStage===0){routeContext.start=idx;routeContext.clickStage=1;toast('Start selected. Click again to select the destination.')}else{routeContext.goal=idx;routeContext.clickStage=0;toast('Destination selected. Routes updated.')}doPlan()});doPlan()}
 
-window.addEventListener('hashchange', render);
-
-// -------------------------------------------------------------
-// TERRAIN ANALYSIS LOGIC & PIXEL INSPECTION
-// -------------------------------------------------------------
-let terrainImage = new Image();
-
-function initTerrain(){
-  terrainImage = new Image();
-  terrainImage.onload = refreshTerrainCanvas;
-  terrainImage.src = currentAsset;
-
-  const alpha = document.querySelector('#overlay-alpha');
-  const viewMode = document.querySelector('#view-mode');
-  const splitCtrl = document.querySelector('#split-slider-ctrl');
-
-  document.querySelector('#terrain-source')?.addEventListener('change', e=>{
-    const map = {ridge: 'mars-terrain.webp', plain: 'mars-horizon.webp', rover: 'mars-rover.webp'};
-    currentAsset = ASSET + (map[e.target.value] || 'mars-terrain.webp');
-    terrainImage.src = currentAsset;
-    cachedInference = null;
-    toast('Loaded scenario image.');
-  });
-
-  document.querySelector('#terrain-file')?.addEventListener('change', e=>{
-    const file = e.target.files?.[0];
-    if(!file) return;
-    const url = URL.createObjectURL(file);
-    currentAsset = url;
-    terrainImage.src = url;
-    cachedInference = null;
-    toast('Custom rover photo uploaded.');
-  });
-
-  alpha?.addEventListener('input', e=>{
-    document.querySelector('#overlay-val').textContent = e.target.value + '%';
-    refreshTerrainCanvas();
-  });
-
-  viewMode?.addEventListener('change', e=>{
-    currentViewMode = e.target.value;
-    const isSplit = (currentViewMode === 'split');
-    document.querySelector('#split-field').style.display = isSplit ? 'block' : 'none';
-    document.querySelector('#split-divider').style.display = isSplit ? 'block' : 'none';
-    refreshTerrainCanvas();
-  });
-
-  splitCtrl?.addEventListener('input', e=>{
-    activeSplitRatio = Number(e.target.value) / 100;
-    document.querySelector('#split-val').textContent = e.target.value + '%';
-    refreshTerrainCanvas();
-  });
-
-  document.querySelector('#run-analysis')?.addEventListener('click', runImageAnalysis);
-
-  const canvas = document.querySelector('#seg-canvas');
-  canvas?.addEventListener('mousemove', handleCanvasMouseMove);
-
-  // Setup split divider dragging
-  const container = document.querySelector('#canvas-container');
-  container?.addEventListener('mousedown', e=>{
-    if(currentViewMode === 'split') isDraggingSplit = true;
-  });
-  window.addEventListener('mouseup', ()=> isDraggingSplit = false);
-  container?.addEventListener('mousemove', e=>{
-    if(isDraggingSplit && currentViewMode === 'split'){
-      const rect = container.getBoundingClientRect();
-      activeSplitRatio = Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width));
-      document.querySelector('#split-slider-ctrl').value = Math.round(activeSplitRatio * 100);
-      document.querySelector('#split-val').textContent = Math.round(activeSplitRatio * 100) + '%';
-      refreshTerrainCanvas();
-    }
-  });
-
-  refreshTerrainCanvas();
+/* Image workspace. A deliberately non-ML color study for offline UX verification. */
+let terrainPreview=null,terrainImage=new Image(),terrainObjectUrl=null,modelOverlayUrl=null,currentInferenceData=null;
+function initTerrain(){terrainImage=new Image();terrainImage.onload=refreshTerrainCanvas;terrainImage.src=currentAsset;const preview=document.querySelector('#source-preview');const alpha=document.querySelector('#overlay-alpha'),toggle=document.querySelector('#overlay-toggle');document.querySelector('#terrain-source').addEventListener('change',e=>{if(terrainObjectUrl){URL.revokeObjectURL(terrainObjectUrl);terrainObjectUrl=null}const map={ridge:'mars-terrain.webp',plain:'mars-horizon.webp',rover:'mars-rover.webp'};currentAsset=ASSET+map[e.target.value];preview.src=currentAsset;terrainImage.src=currentAsset});document.querySelector('#terrain-file').addEventListener('change',e=>{const file=e.target.files?.[0];if(!file)return;if(!file.type.startsWith('image/')){toast('Please choose a supported image.');return}if(file.size>12*1024*1024){toast('Maximum image size is 12 MB.');return}if(terrainObjectUrl)URL.revokeObjectURL(terrainObjectUrl);terrainObjectUrl=URL.createObjectURL(file);preview.src=terrainObjectUrl;terrainImage.src=terrainObjectUrl;currentAsset=terrainObjectUrl;document.querySelector('#terrain-source').value='ridge';toast('Image loaded locally. No model inference has been claimed.')});alpha.addEventListener('input',e=>{document.querySelector('#overlay-val').textContent=e.target.value+'%';refreshTerrainCanvas()});toggle.addEventListener('change',refreshTerrainCanvas);document.querySelector('#grid-toggle').addEventListener('change',refreshTerrainCanvas);document.querySelector('#terrain-model').addEventListener('change',refreshTerrainCanvas);document.querySelector('#terrain-view-mode')?.addEventListener('change',refreshTerrainCanvas);document.querySelector('#run-analysis').addEventListener('click',runImageAnalysis);document.querySelector('#seg-canvas').addEventListener('mousemove',e=>{const rect=e.currentTarget.getBoundingClientRect();document.querySelector('#pixel-value').textContent=`Image position: ${Math.round((e.clientX-rect.left)/rect.width*100)}%, ${Math.round((e.clientY-rect.top)/rect.height*100)}%`});refreshTerrainCanvas();}
+function refreshTerrainCanvas(){const c=document.querySelector('#seg-canvas');if(!c||!terrainImage.complete||!terrainImage.naturalWidth)return;const ctx=c.getContext('2d');const w=800,h=500;c.width=w;c.height=h;const src=terrainImage;const aspect=src.naturalWidth/src.naturalHeight,win=w/h;let sx=0,sy=0,sw=src.naturalWidth,sh=src.naturalHeight;if(aspect>win){sw=sh*win;sx=(src.naturalWidth-sw)/2}else{sh=sw/win;sy=(src.naturalHeight-sh)/2}ctx.drawImage(src,sx,sy,sw,sh,0,0,w,h);const overlay=Number(document.querySelector('#overlay-alpha')?.value||58)/100;const viewMode=document.querySelector('#terrain-view-mode')?.value||'segmentation';
+ if(viewMode!=='original'&&document.querySelector('#overlay-toggle')?.checked){if(currentInferenceData&&currentInferenceData.visualizations){const vKey=viewMode==='entropy'?'entropy_heatmap_b64':viewMode==='cost'?'cost_heatmap_b64':'pred_mask_b64';const b64=currentInferenceData.visualizations[vKey]||currentInferenceData.overlay_png_base64;if(b64){const mImg=new Image();mImg.onload=()=>{ctx.globalAlpha=overlay*.9;ctx.drawImage(mImg,0,0,w,h);ctx.globalAlpha=1};mImg.src=b64.startsWith('data:')?b64:`data:image/png;base64,${b64}`}}else{const cw=w/85,ch=h/53;for(let y=0;y<53;y++)for(let x=0;x<85;x++){const v=.48+.24*Math.sin(x*.09+y*.12)+.14*Math.cos(x*.16-y*.11)+.06*Math.sin(x*.45);if(viewMode==='entropy'){const ent=clamp(.18+.42*Math.sin(x*.18)*Math.cos(y*.24)+.2*(Math.abs(v-.39)<.08||Math.abs(v-.55)<.08||Math.abs(v-.74)<.08?1:0),0,1);ctx.fillStyle=ent>.65?'#c27e4f':ent>.35?'#8c536c':'#362b40';ctx.globalAlpha=overlay*.75;ctx.fillRect(x*cw,y*ch,cw+1,ch+1)}else if(viewMode==='cost'){const k=v<.39?0:v<.55?1:v<.74?2:3;const costColors=['rgba(178,155,139,.3)','rgba(134,124,130,.4)','rgba(187,149,111,.6)','rgba(150,92,78,.85)'];ctx.fillStyle=costColors[k];ctx.globalAlpha=overlay*.85;ctx.fillRect(x*cw,y*ch,cw+1,ch+1)}else{const k=v<.39?0:v<.55?1:v<.74?2:3;ctx.fillStyle=CLASSES[k].color;ctx.globalAlpha=overlay*.81;ctx.fillRect(x*cw,y*ch,cw+1,ch+1)}}ctx.globalAlpha=1}}if(document.querySelector('#grid-toggle')?.checked){ctx.strokeStyle='rgba(255,238,214,.22)';ctx.lineWidth=.5;for(let x=0;x<w;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke()}for(let y=0;y<h;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}}document.querySelector('#image-dim').textContent=`${src.naturalWidth} × ${src.naturalHeight}`;const ecanvas=document.querySelector('#entropy-canvas');if(ecanvas){ecanvas.width=w;ecanvas.height=h;const ex=ecanvas.getContext('2d');ex.drawImage(src,sx,sy,sw,sh,0,0,w,h);if(currentInferenceData&&currentInferenceData.visualizations?.entropy_heatmap_b64){const entImg=new Image();entImg.onload=()=>{ex.globalAlpha=.85;ex.drawImage(entImg,0,0,w,h);ex.globalAlpha=1};entImg.src=currentInferenceData.visualizations.entropy_heatmap_b64.startsWith('data:')?currentInferenceData.visualizations.entropy_heatmap_b64:`data:image/png;base64,${currentInferenceData.visualizations.entropy_heatmap_b64}`}else{const overlay=ex.createImageData(w,h);for(let py=0;py<h;py+=2)for(let px=0;px<w;px+=2){const n=.5+.26*Math.sin(px*.017+py*.012)+.18*Math.cos(py*.03-px*.009)+.12*Math.sin(px*.055-py*.043);const v=clamp(n,0,1);let r=Math.floor(39+140*v),g=Math.floor(31+57*v),b=Math.floor(47+36*v);if(v>.69){r=Math.floor(160+70*(v-.69)/.31);g=Math.floor(80+76*(v-.69)/.31);b=Math.floor(52+12*(v-.69)/.31)}for(let yy=py;yy<Math.min(py+2,h);yy++)for(let xx=px;xx<Math.min(px+2,w);xx++){const idx=(yy*w+xx)*4;overlay.data[idx]=r;overlay.data[idx+1]=g;overlay.data[idx+2]=b;overlay.data[idx+3]=Math.floor(130+78*v)}}ex.putImageData(overlay,0,0)}}
 }
+async function fetchJSON(path,opt={}){const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),5500);try{const res=await fetch(API+path,{...opt,signal:ctrl.signal});if(!res.ok)throw new Error(`HTTP ${res.status}`);return await res.json()}finally{clearTimeout(timer)}}
+async function runImageAnalysis(){const btn=document.querySelector('#run-analysis'),select=document.querySelector('#terrain-model'),status=document.querySelector('#backend-status');if(select.value==='illustrative'){toast('The illustrative color grouping is a visual-only study. Choose the API model for real inference.');return}btn.textContent='Checking model service…';btn.disabled=true;try{const model=await fetchJSON('/model/info');if(!model){throw new Error('Model metadata unavailable')}const img=await fetch(currentAsset).then(r=>r.blob());const fd=new FormData();fd.append('file',img,'mars-input.png');const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),20000);let res;try{res=await fetch(API+'/predict',{method:'POST',body:fd,signal:ctrl.signal})}finally{clearTimeout(timer)}if(!res.ok)throw new Error(`Prediction endpoint returned HTTP ${res.status}`);const data=await res.json();currentInferenceData=data;const overlay=data.overlay_png_base64||data.overlay_base64||data.overlay;if(overlay&&typeof overlay==='string'){document.querySelector('#overlay-title').textContent='Verified backend output';document.querySelector('#overlay-mode').textContent='API model output';refreshTerrainCanvas();status.textContent='Received prediction from the configured backend ('+(data.model_name||'DeepLabV3+')+'). Class breakdown: '+(data.class_breakdown?Object.entries(data.class_breakdown).map(([k,v])=>`${k}: ${(v*100).toFixed(1)}%`).join(' · '):'Calculated.');toast('Backend prediction received.')}else{status.textContent='Backend responded, but its response lacked a supported overlay field. Check docs/API_INTEGRATION.md.';toast('API reached, but overlay response format is unsupported.')}}catch(e){status.textContent=`No compatible model response: ${e.message}. The colored canvas remains an illustrative, non-ML visualization.`;toast('No compatible model backend is currently available.')}finally{btn.textContent='Run image analysis →';btn.disabled=false}}
 
-function refreshTerrainCanvas(){
-  const c = document.querySelector('#seg-canvas');
-  if(!c || !terrainImage.complete || !terrainImage.naturalWidth) return;
-  const ctx = c.getContext('2d');
-  const w = 800, h = 440;
-  c.width = w;
-  c.height = h;
-
-  // 1. Draw source base image
-  ctx.drawImage(terrainImage, 0, 0, w, h);
-
-  const alpha = Number(document.querySelector('#overlay-alpha')?.value || 65) / 100;
-
-  // 2. Render overlays based on viewMode
-  if(currentViewMode === 'overlay' || currentViewMode === 'split'){
-    const splitX = (currentViewMode === 'split') ? Math.round(w * activeSplitRatio) : 0;
-    const splitW = (currentViewMode === 'split') ? (w - splitX) : w;
-
-    ctx.save();
-    if(currentViewMode === 'split'){
-      ctx.beginPath();
-      ctx.rect(splitX, 0, splitW, h);
-      ctx.clip();
-    }
-
-    if(cachedInference && cachedInference.overlayImage){
-      ctx.globalAlpha = alpha;
-      ctx.drawImage(cachedInference.overlayImage, 0, 0, w, h);
-    } else {
-      // Deterministic synthetic preview until inference runs
-      const cw = w / 80, ch = h / 44;
-      for(let y=0; y<44; y++){
-        for(let x=0; x<80; x++){
-          if(currentViewMode === 'split' && x*cw < splitX) continue;
-          const v = 0.5 + 0.22*Math.sin(x*0.12 + y*0.15) + 0.15*Math.cos(x*0.2 - y*0.1);
-          const k = v < 0.38 ? 0 : (v < 0.58 ? 1 : (v < 0.78 ? 2 : 3));
-          ctx.fillStyle = CLASSES[k].color;
-          ctx.globalAlpha = alpha * 0.75;
-          ctx.fillRect(x*cw, y*ch, cw+0.5, ch+0.5);
-        }
-      }
-    }
-    ctx.restore();
-
-    // Position split divider
-    const div = document.querySelector('#split-divider');
-    if(div && currentViewMode === 'split'){
-      div.style.left = (activeSplitRatio * 100) + '%';
-    }
-  } else if(currentViewMode === 'entropy'){
-    // Predictive entropy heatmap mode
-    const imgData = ctx.getImageData(0, 0, w, h);
-    const d = imgData.data;
-    for(let i=0; i<d.length; i+=4){
-      const x = (i/4)%w, y = Math.floor((i/4)/w);
-      const ent = 0.5 + 0.35*Math.sin(x*0.015)*Math.cos(y*0.02) + 0.15*Math.sin(x*0.04);
-      const eNorm = Math.max(0, Math.min(1, ent));
-      d[i] = Math.round(d[i]*0.3 + 245*eNorm*0.7);
-      d[i+1] = Math.round(d[i+1]*0.3 + 80*(1-eNorm)*0.7);
-      d[i+2] = Math.round(d[i+2]*0.3 + 30);
-    }
-    ctx.putImageData(imgData, 0, 0);
-  } else if(currentViewMode === 'cost'){
-    // Traversability cost heatmap
-    ctx.fillStyle = 'rgba(16, 185, 129, 0.4)'; // Soil default
-    ctx.fillRect(0, 0, w, h);
-    // Sand zones in amber
-    ctx.fillStyle = 'rgba(245, 158, 11, 0.6)';
-    ctx.beginPath();
-    ctx.ellipse(w*0.5, h*0.65, w*0.35, h*0.18, 0, 0, Math.PI*2);
-    ctx.fill();
-    // Rock obstacles in crimson
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.85)';
-    ctx.beginPath();
-    ctx.arc(w*0.4, h*0.5, 22, 0, Math.PI*2);
-    ctx.arc(w*0.68, h*0.42, 18, 0, Math.PI*2);
-    ctx.fill();
-  }
+/* Deterministic synthetic probability exercise for the uncertainty page. */
+function makeRiskData(){const vals=[];for(let i=0;i<600;i++){const conf=.54+.45*rand2(i,71),bad=rand2(i,18)<(.52-conf*.45);vals.push({conf,bad:bad?1:0})}vals.sort((a,b)=>b.conf-a.conf);return vals}
+const uncertaintyData=makeRiskData();
+function riskAt(coverage,random=false){if(random)return uncertaintyData.reduce((s,x)=>s+x.bad,0)/uncertaintyData.length;const n=Math.max(1,Math.round(coverage*uncertaintyData.length));return uncertaintyData.slice(0,n).reduce((s,x)=>s+x.bad,0)/n}
+function renderRiskChart(){const s=document.querySelector('#risk-chart');if(!s)return;const left=60,top=28,w=625,h=272,maxRisk=.30;let html='';for(let i=0;i<=5;i++){const y=top+h-i*h/5;html+=`<line x1="${left}" y1="${y}" x2="${left+w}" y2="${y}" stroke="#6b5143" opacity=".25"/><text x="${left-14}" y="${y+4}" text-anchor="end" fill="#a7978b" font-size="11">${(i*maxRisk/5).toFixed(2)}</text>`}for(let i=0;i<=5;i++){const cov=.5+i*.1,x=left+i*w/5;html+=`<line x1="${x}" y1="${top}" x2="${x}" y2="${top+h}" stroke="#6b5143" opacity=".18"/><text x="${x}" y="${top+h+22}" text-anchor="middle" fill="#a7978b" font-size="11">${cov.toFixed(1)}</text>`}let path='',rnd='';for(let i=0;i<=50;i++){const c=.5+i*.01;const x=left+(c-.5)*w/.5,y=top+h-clamp(riskAt(c)/maxRisk,0,1)*h,yr=top+h-clamp(riskAt(c,true)/maxRisk,0,1)*h;path+=(i?' L':'M')+x+' '+y;rnd+=(i?' L':'M')+x+' '+yr}const chosen=Number(document.querySelector('#coverage-slider')?.value||85)/100,px=left+(chosen-.5)*w/.5,py=top+h-clamp(riskAt(chosen)/maxRisk,0,1)*h;html+=`<path d="${rnd}" fill="none" stroke="#a2aa9b" stroke-width="2" stroke-dasharray="7 5"/><path d="${path}" fill="none" stroke="#ce9370" stroke-width="3"/><line x1="${px}" y1="${top}" x2="${px}" y2="${top+h}" stroke="#d9ad8a" stroke-dasharray="4 5" opacity=".75"/><circle cx="${px}" cy="${py}" r="6" fill="#201713" stroke="#dfa885" stroke-width="2"/><text x="${left+w/2}" y="${top+h+53}" text-anchor="middle" font-size="12" fill="#b5a599">Coverage (fraction retained)</text><text transform="translate(17 ${top+h/2}) rotate(-90)" text-anchor="middle" font-size="12" fill="#b5a599">Selective error rate</text>`;s.innerHTML=html;document.querySelector('#coverage-big').textContent=Math.round(chosen*100)+'%';document.querySelector('#coverage-val').textContent=Math.round(chosen*100)+'%';document.querySelector('#coverage-explain').textContent=`Retained selective error: ${(riskAt(chosen)*100).toFixed(1)}% · deterministic synthetic example, not model evaluation.`}
+function initUncertainty(){
+ document.querySelector('#coverage-slider').addEventListener('input',()=>{renderRiskChart();updateUncertaintyMetrics()});
+ document.querySelector('#uncert-reliability').addEventListener('click',()=>{toast('This reliability chart uses synthetic bins; verified model calibration requires held-out predictions.');document.querySelector('#calibration-card').scrollIntoView({behavior:'smooth',block:'center'})});
+ document.querySelector('#uncert-select').addEventListener('click',()=>document.querySelector('#coverage-slider').focus());
+ for(const mode of ['confidence','entropy']){document.querySelector('#unc-view-'+mode).addEventListener('click',()=>{document.querySelectorAll('.map-switch button').forEach(b=>b.classList.remove('active'));document.querySelector('#unc-view-'+mode).classList.add('active');document.querySelector('#unc-color-layer').className='unc-color-layer '+(mode==='entropy'?'entropy-mode':'confidence-mode')})}
+ renderRiskChart();renderReliabilityDemo();updateUncertaintyMetrics();loadUncertaintyBenchmark();
 }
+function updateUncertaintyMetrics(){const cov=Number(document.querySelector('#coverage-slider').value)/100;document.querySelector('#metric-coverage').textContent=Math.round(cov*100)+'%';document.querySelector('#metric-selectiverisk').textContent=(riskAt(cov)*100).toFixed(1)+'%';document.querySelector('#metric-abstain').textContent=Math.round((1-cov)*100)+'%'}
+function renderReliabilityDemo(){const e=document.querySelector('#calibration-chart');if(!e)return;let svg='';for(let i=0;i<5;i++){let x=42+i*55;svg+=`<line x1="${x}" y1="20" x2="${x}" y2="227" stroke="#92715b" opacity=".15"/>`};for(let i=0;i<5;i++){let y=227-i*49;svg+=`<line x1="42" y1="${y}" x2="310" y2="${y}" stroke="#92715b" opacity=".16"/>`};svg+='<line x1="42" y1="227" x2="310" y2="20" stroke="#e5d0b9" stroke-width="1.6" stroke-dasharray="7 6" opacity=".7"/>';const bins=Array.from({length:10},()=>[]);uncertaintyData.forEach(x=>bins[Math.min(9,Math.floor(x.conf*10))].push(x));bins.forEach((points,i)=>{let k=.05+i*.1,actual=points.length?points.reduce((a,b)=>a+1-b.bad,0)/points.length:0;let x=43+i*26.5,y=227-actual*207;svg+=`<rect x="${x}" y="${y}" width="19" height="${Math.max(0,227-y)}" fill="#b77953" opacity=".74"><title>Confidence bin ${i+1}: ${points.length} predictions, accuracy ${actual.toFixed(2)}</title></rect>`});svg+='<text x="178" y="255" fill="#c1ad9b" font-size="12" text-anchor="middle">Predicted confidence →</text>';e.innerHTML=svg}
 
-function handleCanvasMouseMove(e){
-  const c = document.querySelector('#seg-canvas');
-  if(!c) return;
-  const rect = c.getBoundingClientRect();
-  const x = Math.floor((e.clientX - rect.left) / rect.width * 800);
-  const y = Math.floor((e.clientY - rect.top) / rect.height * 440);
-
-  // Approximate terrain class at cursor
-  const v = 0.5 + 0.22*Math.sin((x/10)*0.12 + (y/10)*0.15) + 0.15*Math.cos((x/10)*0.2 - (y/10)*0.1);
-  const k = (Math.hypot(x - 320, y - 220) < 25 || Math.hypot(x - 544, y - 185) < 20) ? 3 : (v < 0.38 ? 0 : (v < 0.58 ? 1 : (v < 0.78 ? 2 : 3)));
-  const cls = CLASSES[k];
-  const entropy = (0.2 + 0.6*Math.abs(Math.sin(x*0.02)*Math.cos(y*0.02))).toFixed(2);
-
-  document.querySelector('#hud-coord').textContent = `(${x}, ${y})`;
-  document.querySelector('#hud-class').textContent = cls.name;
-  document.querySelector('#hud-class').style.color = cls.color;
-  document.querySelector('#hud-hazard').textContent = cls.hazard;
-  document.querySelector('#hud-cost').textContent = cls.cost.toFixed(1);
-  document.querySelector('#hud-entropy').textContent = entropy;
-}
-
-async function runImageAnalysis(){
-  const btn = document.querySelector('#run-analysis');
-  const status = document.querySelector('#backend-status');
-  btn.textContent = 'Executing Model Inference…';
-  btn.disabled = true;
-  status.textContent = 'Sending frame to FastAPI /api/predict endpoint…';
-
-  try {
-    const imgBlob = await fetch(currentAsset).then(r=>r.blob());
-    const fd = new FormData();
-    fd.append('file', imgBlob, 'rover-input.jpg');
-    fd.append('model_name', 'deeplabv3plus');
-
-    const res = await fetch(API + '/api/predict', {method: 'POST', body: fd});
-    if(!res.ok){
-      const err = await res.json().catch(()=>({detail: `HTTP ${res.status}`}));
-      throw new Error(err.detail || `Server returned ${res.status}`);
-    }
-    const data = await res.json();
-
-    if(data.overlay_png_base64){
-      const img = new Image();
-      img.onload = ()=>{
-        cachedInference = {
-          overlayImage: img,
-          telemetry: data
-        };
-        refreshTerrainCanvas();
-        status.textContent = `Inference completed in ${data.inference_latency_ms} ms on ${data.device}.`;
-        document.querySelector('#stat-soil').textContent = data.class_breakdown?.Soil?.percentage + '%' || '45%';
-        document.querySelector('#stat-sand').textContent = data.class_breakdown?.Sand?.percentage + '%' || '22%';
-        document.querySelector('#stat-rock').textContent = data.class_breakdown?.['Big Rock']?.percentage + '%' || '4%';
-        document.querySelector('#stat-entropy').textContent = data.uncertainty_telemetry?.mean_entropy?.toFixed(3) || '0.342';
-        toast('Inference results updated on canvas.');
-      };
-      img.src = `data:image/png;base64,${data.overlay_png_base64}`;
-    }
-  } catch(e) {
-    status.textContent = `Model inference unavailable: ${e.message}. Showing local synthetic terrain field.`;
-    toast(`Inference notice: ${e.message}`);
-  } finally {
-    btn.textContent = 'Run Backend Inference →';
-    btn.disabled = false;
-  }
-}
-
-// -------------------------------------------------------------
-// 7. ROUTE PLANNER & REGRET LOGIC
-// -------------------------------------------------------------
-const GW = 76, GH = 42;
-
-function initRoute(){
-  routeContext = {
-    start: 24*GW + 8,
-    goal: 14*GW + 68,
-    soil: 1.0,
-    bedrock: 1.3,
-    sand: 6.0,
-    rock: 999.0,
-    lambda: 2.5
-  };
-
-  const canvas = document.querySelector('#route-canvas');
-  canvas?.addEventListener('click', e=>{
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.max(0, Math.min(GW-1, Math.floor((e.clientX - rect.left)/rect.width * GW)));
-    const y = Math.max(0, Math.min(GH-1, Math.floor((e.clientY - rect.top)/rect.height * GH)));
-    const idx = y*GW + x;
-    if(!routeContext.hasStart){
-      routeContext.start = idx;
-      routeContext.hasStart = true;
-      toast('Start pin placed. Click to select destination.');
-    } else {
-      routeContext.goal = idx;
-      routeContext.hasStart = false;
-      toast('Destination set. Computing paths…');
-    }
-    computeAndDrawRoutes();
-  });
-
-  document.querySelector('#soil-weight')?.addEventListener('input', e=>{
-    routeContext.soil = Number(e.target.value)/10;
-    document.querySelector('#soil-val').textContent = routeContext.soil.toFixed(1);
-    computeAndDrawRoutes();
-  });
-  document.querySelector('#bedrock-weight')?.addEventListener('input', e=>{
-    routeContext.bedrock = Number(e.target.value)/10;
-    document.querySelector('#bedrock-val').textContent = routeContext.bedrock.toFixed(1);
-    computeAndDrawRoutes();
-  });
-  document.querySelector('#sand-weight')?.addEventListener('input', e=>{
-    routeContext.sand = Number(e.target.value)/10;
-    document.querySelector('#sand-val').textContent = routeContext.sand.toFixed(1);
-    computeAndDrawRoutes();
-  });
-  document.querySelector('#lambda-slider')?.addEventListener('input', e=>{
-    routeContext.lambda = Number(e.target.value)/10;
-    document.querySelector('#lambda-val').textContent = routeContext.lambda.toFixed(1);
-    computeAndDrawRoutes();
-  });
-  document.querySelector('#replan-btn')?.addEventListener('click', computeAndDrawRoutes);
-
-  computeAndDrawRoutes();
-}
-
-function computeAndDrawRoutes(){
-  const c = document.querySelector('#route-canvas');
-  if(!c) return;
-  const ctx = c.getContext('2d');
-  const rect = c.parentElement.getBoundingClientRect();
-  c.width = rect.width || 700;
-  c.height = rect.height || 480;
-  const w = c.width, h = c.height;
-
-  // Background synthetic terrain grid
-  ctx.fillStyle = '#17110f';
-  ctx.fillRect(0, 0, w, h);
-
-  const cw = w / GW, ch = h / GH;
-
-  // Draw hazard zones: Sand dunes & Big Rock boulders
-  for(let y=0; y<GH; y++){
-    for(let x=0; x<GW; x++){
-      const isSand = (y >= 15 && y <= 27 && x >= 20 && x <= 55);
-      const isRock = (Math.hypot(x - 38, y - 21) < 4);
-      if(isRock){
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
-        ctx.fillRect(x*cw, y*ch, cw+0.5, ch+0.5);
-      } else if(isSand){
-        ctx.fillStyle = 'rgba(245, 158, 11, 0.45)';
-        ctx.fillRect(x*cw, y*ch, cw+0.5, ch+0.5);
-      } else {
-        ctx.fillStyle = 'rgba(16, 185, 129, 0.12)';
-        ctx.fillRect(x*cw, y*ch, cw+0.5, ch+0.5);
-      }
-    }
-  }
-
-  // Draw start and goal markers
-  const sx = (routeContext.start % GW) * cw + cw/2;
-  const sy = Math.floor(routeContext.start / GW) * ch + ch/2;
-  const gx = (routeContext.goal % GW) * cw + cw/2;
-  const gy = Math.floor(routeContext.goal / GW) * ch + ch/2;
-
-  // 1. Oracle Route (circumvents sand & rocks via true knowledge)
-  ctx.strokeStyle = '#10B981';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(sx, sy);
-  ctx.quadraticCurveTo(w*0.5, h*0.12, gx, gy);
-  ctx.stroke();
-
-  // 2. Predicted Route (misclassifies sand as soil -> drives straight through hazard!)
-  ctx.strokeStyle = '#EF4444';
-  ctx.lineWidth = 3;
-  ctx.setLineDash([6, 5]);
-  ctx.beginPath();
-  ctx.moveTo(sx, sy);
-  ctx.lineTo(w*0.5, h*0.52);
-  ctx.lineTo(gx, gy);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // 3. Uncertainty-Aware Route (λ · H steers around high predictive entropy zone)
-  ctx.strokeStyle = '#F59E0B';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(sx, sy);
-  ctx.quadraticCurveTo(w*0.5, h*0.88, gx, gy);
-  ctx.stroke();
-
-  // Draw Start/Goal Pins
-  ctx.fillStyle = '#10B981';
-  ctx.beginPath();
-  ctx.arc(sx, sy, 7, 0, Math.PI*2);
-  ctx.fill();
-  ctx.fillStyle = '#F59E0B';
-  ctx.beginPath();
-  ctx.arc(gx, gy, 7, 0, Math.PI*2);
-  ctx.fill();
-
-  // Update Telemetry Display
-  const oracleCost = 66.7;
-  const predCost = 132.9;
-  const uncCost = 73.8;
-  const regret = (predCost - oracleCost).toFixed(1);
-  const regretPct = (((predCost - oracleCost) / oracleCost) * 100).toFixed(1);
-  const savings = (predCost - uncCost).toFixed(1);
-
-  const block = document.querySelector('#route-telemetry-block');
-  if(block){
-    block.innerHTML = `
-      <ul class="mini-list">
-        <li><span>Oracle True Cost R*:</span><strong>${oracleCost}</strong></li>
-        <li><span>Predicted Route Cost R_pred:</span><strong style="color:#EF4444">${predCost}</strong></li>
-        <li><span>Uncertainty Route Cost R_unc:</span><strong style="color:#F59E0B">${uncCost}</strong></li>
-        <li><span>Downstream Route Regret:</span><strong style="color:#EF4444">+${regret} (+${regretPct}%)</strong></li>
-        <li><span>Uncertainty Savings (ΔC):</span><strong style="color:#10B981">-${savings} pts</strong></li>
-      </ul>
-      <div class="mini-rule"></div>
-      <p class="subtle">Evaluating on true ground truth cost grid. Inaccurate sand perception results in +99.3% route regret; uncertainty guidance reduces regret to +10.7%.</p>
-    `;
-  }
-}
-
-// -------------------------------------------------------------
-// 8. UNCERTAINTY LAB LOGIC
-// -------------------------------------------------------------
-async function initUncertainty(){
-  try {
-    const data = await fetchJSON('/metrics');
-    const sel = data.models?.all_soil_baseline?.selective_prediction;
-    const ece = data.models?.all_soil_baseline?.calibration?.ece;
-    if(ece !== undefined) document.querySelector('#metric-ece').textContent = ece.toFixed(3);
-    if(sel?.aurc_gain !== undefined) document.querySelector('#metric-aurc').textContent = '+' + sel.aurc_gain.toFixed(3);
-    renderRiskCoverageChart(sel);
-    renderReliabilityDiagram(data.models?.all_soil_baseline?.calibration?.bins);
-  } catch(e) {
-    renderRiskCoverageChart(null);
-    renderReliabilityDiagram(null);
-  }
-
-  document.querySelector('#abstain-slider')?.addEventListener('input', e=>{
-    const tau = Number(e.target.value) / 100;
-    document.querySelector('#thresh-val').textContent = tau.toFixed(2);
-    const cov = Math.round((1.0 - (tau < 0.5 ? 0.05 : (tau - 0.4)*0.4)) * 100);
-    document.querySelector('#metric-coverage').textContent = cov + '%';
-    document.querySelector('#metric-abstain').textContent = (100 - cov) + '%';
-    const rec = document.querySelector('#policy-recommendation');
-    const desc = document.querySelector('#policy-desc');
-    if(tau < 0.60){
-      rec.textContent = 'AUTONOMOUS';
-      rec.style.color = '#10B981';
-      desc.textContent = 'High confidence; autonomous driving approved without ground station intervention.';
-    } else {
-      rec.textContent = 'REQUEST_TELEOPERATION';
-      rec.style.color = '#F59E0B';
-      desc.textContent = 'High regional entropy exceeds threshold; rover halts to request orbiter verification.';
-    }
-  });
-}
-
-function renderRiskCoverageChart(sel){
-  const svg = document.querySelector('#risk-chart');
-  if(!svg) return;
-  const milestones = sel?.coverage_milestones || [
-    {actual_coverage: 1.0, selective_risk: 0.544, random_abstention_risk: 0.544},
-    {actual_coverage: 0.95, selective_risk: 0.541, random_abstention_risk: 0.544},
-    {actual_coverage: 0.90, selective_risk: 0.531, random_abstention_risk: 0.544},
-    {actual_coverage: 0.80, selective_risk: 0.532, random_abstention_risk: 0.544},
-    {actual_coverage: 0.70, selective_risk: 0.530, random_abstention_risk: 0.544},
-    {actual_coverage: 0.50, selective_risk: 0.556, random_abstention_risk: 0.544}
-  ];
-
-  let pathD = '', rndD = '';
-  const w = 560, h = 200, padX = 60, padY = 30;
-
-  milestones.forEach((m, i)=>{
-    const x = padX + (1.0 - m.actual_coverage) * (w / 0.5);
-    const y = padY + (m.selective_risk / 0.7) * h;
-    const yr = padY + (m.random_abstention_risk / 0.7) * h;
-    pathD += (i===0?'M':'L') + `${x.toFixed(1)},${y.toFixed(1)} `;
-    rndD += (i===0?'M':'L') + `${x.toFixed(1)},${yr.toFixed(1)} `;
-  });
-
-  svg.innerHTML = `
-    <line x1="${padX}" y1="${padY+h}" x2="${padX+w}" y2="${padY+h}" stroke="#766d68" stroke-width="1"/>
-    <line x1="${padX}" y1="${padY}" x2="${padX}" y2="${padY+h}" stroke="#766d68" stroke-width="1"/>
-    <path d="${rndD}" fill="none" stroke="#a7a599" stroke-width="2" stroke-dasharray="6 5"/>
-    <path d="${pathD}" fill="none" stroke="#ca865e" stroke-width="3"/>
-    <text x="${padX+w/2}" y="${padY+h+26}" fill="#aa9990" font-size="11" text-anchor="middle">Retained Coverage (1.0 → 0.5)</text>
-    <text x="18" y="${padY+h/2}" fill="#aa9990" font-size="11" transform="rotate(-90 18 ${padY+h/2})" text-anchor="middle">Selective Risk</text>
-  `;
-}
-
-function renderReliabilityDiagram(bins){
-  const svg = document.querySelector('#calibration-chart');
-  if(!svg) return;
-  const list = bins || Array.from({length:10}, (_,i)=>({confidence: (i+0.5)/10, accuracy: (i < 5 ? 0.35 : 0.46)}));
-  let bars = '';
-  const w = 240, h = 170, padX = 40, padY = 20;
-
-  list.forEach((b, i)=>{
-    const bx = padX + i * (w / 10);
-    const barH = (b.accuracy || 0.1) * h;
-    const by = padY + h - barH;
-    bars += `<rect x="${bx}" y="${by}" width="18" height="${barH}" fill="#b87555" opacity="0.8"/>`;
-  });
-
-  svg.innerHTML = `
-    <line x1="${padX}" y1="${padY+h}" x2="${padX+w}" y2="${padY+h}" stroke="#766d68" stroke-width="1"/>
-    <line x1="${padX}" y1="${padY}" x2="${padX}" y2="${padY+h}" stroke="#766d68" stroke-width="1"/>
-    <line x1="${padX}" y1="${padY+h}" x2="${padX+w}" y2="${padY}" stroke="#e0d1be" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.6"/>
-    ${bars}
-    <text x="${padX+w/2}" y="${padY+h+24}" fill="#aa9990" font-size="10" text-anchor="middle">Confidence (0.0 → 1.0)</text>
-  `;
-}
-
-// -------------------------------------------------------------
-// 9. MODEL EVALUATION LOGIC
-// -------------------------------------------------------------
-async function initModels(){
-  document.querySelector('#load-verified-btn')?.addEventListener('click', loadVerifiedModelEvaluation);
-  document.querySelector('#eval-model-select')?.addEventListener('change', loadVerifiedModelEvaluation);
-  loadVerifiedModelEvaluation();
-}
-
-async function loadVerifiedModelEvaluation(){
-  const modelKey = document.querySelector('#eval-model-select')?.value || 'deeplabv3plus';
-  try {
-    const data = await fetchJSON('/api/benchmark');
-    const m = data.models?.[modelKey] || {};
-    
-    // 1. Metric Cards
-    const cards = document.querySelector('#eval-metric-cards');
-    if(cards){
-      cards.innerHTML = `
-        ${metricCard('Mean IoU', m.mean_iou?.toFixed(4) || '—', 'Evaluation metric')}
-        ${metricCard('Pixel Accuracy', m.pixel_accuracy ? (m.pixel_accuracy*100).toFixed(1)+'%' : '—', 'Global pixel overlap')}
-        ${metricCard('Big Rock Recall', m.hazard_evaluation?.big_rock?.recall?.toFixed(3) || '—', 'Obstacle detection')}
-        ${metricCard('Cost-Weighted Error', m.cost_weighted_error?.toFixed(3) || '—', 'Asymmetric loss penalty')}
-      `;
-    }
-
-    // 2. Normalized Confusion Matrix Heatmap
-    const cm = m.confusion_matrix;
-    const cmContainer = document.querySelector('#confusion-container');
-    if(cm && cmContainer){
-      let table = `<table class="cm-heatmap"><thead><tr><th>GT \\ Pred</th>${CLASSES.map(c=>`<th>${c.name}</th>`).join('')}</tr></thead><tbody>`;
-      const totals = cm.map(row=> row.reduce((a,b)=> a+b, 0));
-      for(let r=0; r<4; r++){
-        table += `<tr><th style="text-align:right">${CLASSES[r].name}</th>`;
-        for(let c=0; c<4; c++){
-          const count = cm[r][c];
-          const pct = totals[r] > 0 ? (count / totals[r] * 100) : 0;
-          const isLethal = (r===2 && c===0) || (r===3 && c===0);
-          const alpha = 0.15 + (pct / 100) * 0.75;
-          const bg = isLethal ? `rgba(239, 68, 68, ${alpha})` : `rgba(195, 126, 73, ${alpha})`;
-          table += `<td><div class="cm-cell ${isLethal?'cm-danger':''}" style="background:${bg}" title="${CLASSES[r].name} predicted as ${CLASSES[c].name}: ${count.toLocaleString()} px">
-            <span class="cm-pct">${pct.toFixed(1)}%</span>
-            <span class="cm-count">${count > 1e6 ? (count/1e6).toFixed(1)+'M' : (count > 1e3 ? (count/1e3).toFixed(0)+'k' : count)}</span>
-          </div></td>`;
-        }
-        table += `</tr>`;
-      }
-      table += `</tbody></table><div class="subtle" style="margin-top:10px">Evaluated over ${m.total_evaluated_pixels?.toLocaleString() || '9.8M'} pixels on held-out test_min1 gold annotations.</div>`;
-      cmContainer.innerHTML = table;
-    }
-
-    // 3. Per-Class IoU Bars
-    const perClass = m.per_class;
-    const perClassContainer = document.querySelector('#per-class-container');
-    if(perClass && perClassContainer){
-      perClassContainer.innerHTML = `<div class="bar-placeholder">
-        ${CLASSES.map(c=>{
-          const val = perClass[c.name]?.iou || 0.0;
-          return `<div>
-            <label>${c.name}</label>
-            <span class="bar-bg"><i style="width:${(val*100).toFixed(1)}%;background:${c.color}"></i></span>
-            <small>${val.toFixed(3)}</small>
-          </div>`;
-        }).join('')}
-      </div>`;
-    }
-  } catch(e) {
-    toast(`Cannot load benchmark report: ${e.message}`);
-  }
-}
-
-async function initLab(){
-  try {
-    const info = await fetchJSON('/model/info');
-    document.querySelector('#lab-provenance').innerHTML = `
-      <ul class="mini-list">
-        <li><span>Architecture:</span><strong>${info.architecture}</strong></li>
-        <li><span>Checkpoint Status:</span><strong>${info.checkpoint_exists ? 'Available (' + (info.checkpoint_size_bytes/1e6).toFixed(1) + ' MB)' : 'Pending Training'}</strong></li>
-        <li><span>Hardware Accelerator:</span><strong>${info.hardware_accelerator}</strong></li>
-        <li><span>Training Epochs Recorded:</span><strong>${info.training_history?.length || 0} epochs</strong></li>
-      </ul>
-    `;
-  } catch(e) {
-    document.querySelector('#lab-provenance').textContent = 'Backend offline or metadata pending.';
-  }
-}
-
-// Initial invocation
+async function initModels(){document.querySelector('#eval-refresh').addEventListener('click',loadModelMetrics);document.querySelector('#preview-metrics').addEventListener('click',renderModelPreview);renderModelAxes();renderModelPreview();}
+function renderModelAxes(){const ids=['#train-curves','#latency-chart'];for(const id of ids){const el=document.querySelector(id);if(!el)continue;let out='';for(let i=0;i<=4;i++){const y=22+i*47;out+=`<line x1="35" x2="404" y1="${y}" y2="${y}" stroke="#755c4d" opacity=".3"/>`}for(let i=0;i<=5;i++){const x=35+i*73.8;out+=`<line y1="22" y2="210" x1="${x}" x2="${x}" stroke="#755c4d" opacity=".15"/>`}out+='<text x="218" y="126" text-anchor="middle" fill="#9b8272" font-size="13">Awaiting verified experiment</text>';el.innerHTML=out}}
+function renderModelPreview(){const fixture=[[.93,.03,.03,.01],[.06,.85,.06,.03],[.08,.10,.75,.07],[.08,.13,.09,.70]],ious=[.82,.78,.69,.61];document.querySelector('#eval-status').innerHTML='<strong>SYNTHETIC EXAMPLE:</strong> All graphs and values below are fabricated solely to demonstrate functioning visuals. Not a model benchmark.';document.querySelector('#evaluation-metrics').innerHTML=`${metricCard('Mean IoU','0.725','Synthetic example')}${metricCard('Sand recall','0.750','Synthetic example')}${metricCard('Big-rock recall','0.700','Synthetic example')}${metricCard('Cost-weighted error','0.120','Synthetic example')}`;document.querySelector('#confusion-container').innerHTML=`<div class="confusion-grid">${CLASSES.map((r,i)=>CLASSES.map((c,j)=>`<div style="background:rgba(189,112,73,${.08+fixture[i][j]*.83})" title="Synthetic ${r.name} → ${c.name}">${fixture[i][j].toFixed(2)}</div>`).join('')).join('')}</div><div class="model-chart-label">SOIL &nbsp;&nbsp;&nbsp;&nbsp; BEDROCK &nbsp;&nbsp;&nbsp;&nbsp; SAND &nbsp;&nbsp;&nbsp;&nbsp; BIG ROCK</div><p class="subtle" style="margin-top:12px">SYNTHETIC EXAMPLE · not a real model confusion matrix</p>`;document.querySelector('#per-class-container').innerHTML=`<div class="bar-placeholder">${CLASSES.map((c,i)=>`<div><label>${c.name}</label><span class="bar-bg"><i style="width:${ious[i]*100}%"></i></span><small>${ious[i].toFixed(2)}</small></div>`).join('')}</div><p class="subtle" style="margin-top:22px">Synthetic example</p>`;let train='',val='';for(let i=0;i<41;i++){const x=35+i*9.18,t=.69*Math.exp(-i/8)+.13,v=.74*Math.exp(-i/10)+.17+Math.sin(i*.8)*.011;train+=(i?' L':'M')+x+','+(205-t*195);val+=(i?' L':'M')+x+','+(205-v*195)}document.querySelector('#train-curves').innerHTML=`<path d="${train}" fill="none" stroke="#c17e59" stroke-width="3"/><path d="${val}" fill="none" stroke="#e8c8a8" stroke-width="2.3"/>${[0,10,20,30,40].map(x=>`<text x="${35+x*9.18}" y="230" font-size="11" fill="#a99586">${x}</text>`).join('')}<text x="40" y="18" font-size="11" fill="#d4a17e">Synthetic train / validation loss</text>`;document.querySelector('#latency-chart').innerHTML=`${[0,1,2,3,4].map(i=>`<line x1="40" y1="${35+i*40}" x2="390" y2="${35+i*40}" stroke="#745745" opacity=".28"/>`).join('')}${[0,1,2,3].map(i=>`<circle cx="${70+i*88}" cy="${177-i*33}" r="6" fill="${i%2?'#c9916c':'#a88c89'}"/>`).join('')}<text x="210" y="220" font-size="11" text-anchor="middle" fill="#bca697">Synthetic latency / accuracy illustration</text>`;toast('Synthetic chart preview enabled. These numbers are not model results.')}
+async function loadModelMetrics(){const status=document.querySelector('#eval-status');status.textContent='Checking backend…';try{let data=null;try{data=await fetchJSON('/api/benchmark')}catch{try{data=await fetchJSON('/benchmark/metrics')}catch{data=await fetchJSON('/metrics')}}const m=data.models?.deeplabv3plus||data.metrics||data;const miou=m.mean_iou??m.miou;const sandRec=m.per_class?.Sand?.recall??m.sand_recall;const rockRec=m.per_class?.['Big Rock']?.recall??m.big_rock_recall;const costErr=m.cost_weighted_error??m.cost_error;document.querySelector('#evaluation-metrics').innerHTML=`${metricCard('Mean IoU',miou!==undefined?Number(miou).toFixed(4):'—','AI4Mars test_min1')}${metricCard('Sand recall',sandRec!==undefined?Number(sandRec).toFixed(4):'—','Hazard sensitivity')}${metricCard('Big-rock recall',rockRec!==undefined?Number(rockRec).toFixed(4):'—','Obstacle sensitivity')}${metricCard('Cost-weighted error',costErr!==undefined?Number(costErr).toFixed(4):'—','Planning impact')}`;if(m.confusion_matrix&&Array.isArray(m.confusion_matrix)){const cm=m.confusion_matrix;const totals=cm.map(row=>row.reduce((a,b)=>a+b,0));const norm=cm.map((row,i)=>row.map(val=>totals[i]>0?val/totals[i]:0));document.querySelector('#confusion-container').innerHTML=`<div class="confusion-grid">${norm.map((r,i)=>r.map((v,j)=>`<div style="background:rgba(189,112,73,${.08+v*.83})" title="Actual ${CLASSES[i].name} → Pred ${CLASSES[j].name}: ${(v*100).toFixed(1)}%">${(v*100).toFixed(0)}%</div>`).join('')).join('')}</div><div class="model-chart-label">SOIL &nbsp;&nbsp;&nbsp;&nbsp; BEDROCK &nbsp;&nbsp;&nbsp;&nbsp; SAND &nbsp;&nbsp;&nbsp;&nbsp; BIG ROCK</div><p class="subtle" style="margin-top:12px">Real normalized confusion matrix from AI4Mars empirical benchmark</p>`}if(m.per_class){document.querySelector('#per-class-container').innerHTML=`<div class="bar-placeholder">${CLASSES.map(c=>{const stat=m.per_class[c.name]||{};const val=stat.iou??0;return `<div><label>${c.name}</label><span class="bar-bg"><i style="width:${Math.round(val*100)}%"></i></span><small>${Number(val).toFixed(3)}</small></div>`}).join('')}</div><p class="subtle" style="margin-top:22px">Real per-class IoU (AI4Mars)</p>`}status.textContent='Connected empirical benchmark metrics loaded from verified report ('+(data.test_partition||'test_min1')+').';toast('Empirical benchmark loaded.')}catch(e){status.textContent=`No compatible metrics response: ${e.message}. Showing truthful unavailable states.`;toast('No verified model metrics available.')}}
+function initLab(){document.querySelector('#load-experiments').addEventListener('click',async()=>{try{const raw=await fetchJSON('/experiments');const items=Array.isArray(raw)?raw:Array.isArray(raw.experiments)?raw.experiments:[];if(!items.length)throw new Error('No runs returned');document.querySelector('#experiments-list').innerHTML=`<ul class="mini-list">${items.slice(0,15).map(e=>`<li><span>${esc(e.name||e.id||'Experiment')}</span><strong>${esc(e.status||'Recorded')}</strong></li>`).join('')}</ul>`;toast(`${items.length} experiment(s) loaded.`)}catch(e){toast(`Cannot load experiments: ${e.message}`)}})}
+function esc(str){return String(str).replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]))}
 render();
