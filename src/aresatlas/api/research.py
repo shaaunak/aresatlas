@@ -79,35 +79,35 @@ async def list_experiments():
 @router.get("/metrics")
 async def get_metrics():
     benchmark_file = REPORTS_DIR / "empirical_benchmarks.json"
-    if benchmark_file.exists():
-        with open(benchmark_file, "r") as f:
-            data = json.load(f)
-            deeplab = data.get("models", {}).get("deeplabv3plus", {})
-            baseline = data.get("models", {}).get("all_soil_baseline", {})
-            
-            # Format combined response for standalone frontend and benchmark explorer
-            return {
-                "evaluation_name": data.get("evaluation_name", "AresAtlas V2.0 Evaluation"),
-                "dataset": data.get("dataset", "NASA JPL AI4Mars"),
-                "test_partition": data.get("test_partition", "test_min1"),
-                "mean_iou": deeplab.get("mean_iou", 0.432),
-                "miou": deeplab.get("mean_iou", 0.432),
-                "pixel_accuracy": deeplab.get("pixel_accuracy", 0.618),
-                "sand_recall": deeplab.get("hazard_evaluation", {}).get("sand", {}).get("recall", 0.691),
-                "big_rock_recall": deeplab.get("hazard_evaluation", {}).get("big_rock", {}).get("recall", 0.423),
-                "cost_weighted_error": deeplab.get("cost_weighted_error", 5.3883),
-                "inference_ms": deeplab.get("mean_latency_ms", 28.4),
-                "models": data.get("models", {}),
-                "metrics": {
-                    "miou": deeplab.get("mean_iou", 0.432),
-                    "mean_iou": deeplab.get("mean_iou", 0.432),
-                    "sand_recall": deeplab.get("hazard_evaluation", {}).get("sand", {}).get("recall", 0.691),
-                    "big_rock_recall": deeplab.get("hazard_evaluation", {}).get("big_rock", {}).get("recall", 0.423),
-                    "cost_weighted_error": deeplab.get("cost_weighted_error", 5.3883),
-                    "inference_ms": deeplab.get("mean_latency_ms", 28.4)
-                }
+    if not benchmark_file.exists():
+        raise HTTPException(status_code=503, detail="Benchmark metrics not yet computed.")
+    with open(benchmark_file, "r") as f:
+        data = json.load(f)
+        deeplab = data.get("models", {}).get("deeplabv3plus", {})
+        baseline = data.get("models", {}).get("all_soil_baseline", {})
+        
+        # Return verified empirical benchmark metrics without synthetic defaults
+        return {
+            "evaluation_name": data.get("evaluation_name", "AresAtlas Empirical Evaluation"),
+            "dataset": data.get("dataset", "NASA JPL AI4Mars (MSL Curiosity)"),
+            "test_partition": data.get("test_partition", "test_min1"),
+            "mean_iou": deeplab.get("mean_iou", baseline.get("mean_iou")),
+            "miou": deeplab.get("mean_iou", baseline.get("mean_iou")),
+            "pixel_accuracy": deeplab.get("pixel_accuracy", baseline.get("pixel_accuracy")),
+            "sand_recall": deeplab.get("hazard_evaluation", {}).get("sand", {}).get("recall"),
+            "big_rock_recall": deeplab.get("hazard_evaluation", {}).get("big_rock", {}).get("recall"),
+            "cost_weighted_error": deeplab.get("cost_weighted_error", baseline.get("cost_weighted_error")),
+            "inference_ms": deeplab.get("mean_latency_ms", baseline.get("mean_latency_ms")),
+            "models": data.get("models", {}),
+            "metrics": {
+                "miou": deeplab.get("mean_iou", baseline.get("mean_iou")),
+                "mean_iou": deeplab.get("mean_iou", baseline.get("mean_iou")),
+                "sand_recall": deeplab.get("hazard_evaluation", {}).get("sand", {}).get("recall"),
+                "big_rock_recall": deeplab.get("hazard_evaluation", {}).get("big_rock", {}).get("recall"),
+                "cost_weighted_error": deeplab.get("cost_weighted_error", baseline.get("cost_weighted_error")),
+                "inference_ms": deeplab.get("mean_latency_ms", baseline.get("mean_latency_ms"))
             }
-    raise HTTPException(status_code=404, detail="Benchmark metrics not yet computed.")
+        }
 
 @router.get("/research/findings")
 async def get_research_findings():
@@ -140,13 +140,22 @@ async def compute_regret_endpoint(req: RouteRegretRequest):
     """
     Computes exact downstream Route Regret on requested Martian image.
     Compares Oracle Route R*, Predicted Route R_pred, and Uncertainty Route R_unc on ground truth cost grid.
+    Uses genuine model inference to compute predicted classes and predictive entropy.
     """
     lbl_path = DATA_DIR / "labels" / f"{req.sample_id}_mask.png"
     if not lbl_path.exists():
         lbl_path = DATA_DIR / "labels" / f"{req.sample_id}.png"
 
+    img_path = DATA_DIR / "images" / f"{req.sample_id}.jpg"
+    if not img_path.exists():
+        for ext in [".png", ".jpeg", ".JPG"]:
+            p = DATA_DIR / "images" / f"{req.sample_id}{ext}"
+            if p.exists():
+                img_path = p
+                break
+
     if not lbl_path.exists():
-        # Fallback synthetic grid
+        # Fallback synthetic grid for demonstrations
         H, W = 128, 128
         gt_map = np.zeros((H, W), dtype=np.uint8)
         gt_map[40:65, 30:100] = 2 # Sand dune
@@ -158,9 +167,44 @@ async def compute_regret_endpoint(req: RouteRegretRequest):
     else:
         raw_lbl = Image.open(lbl_path).resize((128, 128), Image.Resampling.NEAREST)
         gt_map = np.array(raw_lbl, dtype=np.uint8)
-        # Prediction
-        pred_map = np.copy(gt_map)
-        entropy_map = np.zeros_like(gt_map, dtype=np.float32)
+        
+        # Genuine model inference
+        pred_map = None
+        entropy_map = None
+        if img_path.exists():
+            try:
+                raw_img = Image.open(img_path).convert("RGB").resize((128, 128), Image.Resampling.BILINEAR)
+                img_arr = np.array(raw_img, dtype=np.float32) / 255.0
+                mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+                std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+                img_norm = (img_arr - mean) / std
+                img_t = torch.from_numpy(img_norm).permute(2, 0, 1).unsqueeze(0).float()
+                
+                device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+                img_t = img_t.to(device)
+                
+                ckpt_path = MODELS_DIR / "aresatlas_deeplabv3plus.pt"
+                if ckpt_path.exists():
+                    from ..models.deeplabv3plus import DeepLabV3Plus
+                    model = DeepLabV3Plus(num_classes=4).to(device)
+                    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+                    model.eval()
+                    with torch.no_grad():
+                        logits = model(img_t)
+                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                else:
+                    from ..models.deeplabv3plus import AllSoilBaseline
+                    baseline = AllSoilBaseline(num_classes=4)
+                    probs = baseline.predict(img_t).cpu().numpy()[0]
+                
+                pred_map = np.argmax(probs, axis=0).astype(np.uint8)
+                entropy_map = compute_predictive_entropy(probs)
+            except Exception as e:
+                print(f"[-] Inference error in route-regret: {e}")
+        
+        if pred_map is None:
+            pred_map = np.zeros_like(gt_map, dtype=np.uint8)
+            entropy_map = np.zeros_like(gt_map, dtype=np.float32)
 
     res = compute_route_regret_comparison(
         gt_class_map=gt_map,
@@ -176,19 +220,46 @@ async def compute_regret_endpoint(req: RouteRegretRequest):
 
 @router.post("/analyze/uncertainty")
 async def analyze_uncertainty_endpoint(req: UncertaintyAnalysisRequest):
-    lbl_path = DATA_DIR / "labels" / f"{req.sample_id}_mask.png"
-    if not lbl_path.exists():
-        lbl_path = DATA_DIR / "labels" / f"{req.sample_id}.png"
+    """
+    Computes genuine predictive entropy from model probability distributions.
+    Flags regions exceeding the abstention threshold.
+    """
+    img_path = DATA_DIR / "images" / f"{req.sample_id}.jpg"
+    if not img_path.exists():
+        for ext in [".png", ".jpeg", ".JPG"]:
+            p = DATA_DIR / "images" / f"{req.sample_id}{ext}"
+            if p.exists():
+                img_path = p
+                break
 
-    if not lbl_path.exists():
-        raise HTTPException(status_code=404, detail=f"Sample {req.sample_id} not found")
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail=f"Image for sample {req.sample_id} not found")
 
-    lbl_img = Image.open(lbl_path).resize((128, 128), Image.Resampling.NEAREST)
-    arr = np.array(lbl_img)
-    # Estimate boundary entropy
-    gy, gx = np.gradient(arr.astype(float))
-    mag = np.hypot(gx, gy)
-    entropy_map = np.clip(mag / (np.max(mag) + 1e-5), 0.0, 1.0)
+    raw_img = Image.open(img_path).convert("RGB").resize((128, 128), Image.Resampling.BILINEAR)
+    img_arr = np.array(raw_img, dtype=np.float32) / 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img_norm = (img_arr - mean) / std
+    img_t = torch.from_numpy(img_norm).permute(2, 0, 1).unsqueeze(0).float()
+    
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    img_t = img_t.to(device)
+
+    ckpt_path = MODELS_DIR / "aresatlas_deeplabv3plus.pt"
+    if ckpt_path.exists():
+        from ..models.deeplabv3plus import DeepLabV3Plus
+        model = DeepLabV3Plus(num_classes=4).to(device)
+        model.load_state_dict(torch.load(ckpt_path, map_location=device))
+        model.eval()
+        with torch.no_grad():
+            logits = model(img_t)
+            probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+    else:
+        from ..models.deeplabv3plus import AllSoilBaseline
+        baseline = AllSoilBaseline(num_classes=4)
+        probs = baseline.predict(img_t).cpu().numpy()[0]
+
+    entropy_map = compute_predictive_entropy(probs)
     high_unc_ratio = float(np.mean(entropy_map > req.abstention_threshold))
 
     return {

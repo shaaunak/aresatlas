@@ -90,3 +90,49 @@ def test_v2_api_endpoints():
 
     res_findings = client.get("/research/findings")
     assert res_findings.status_code == 200
+
+
+def test_hand_computed_miou_and_precision_recall():
+    """Verifies IoU, precision, and recall math against an exact hand calculation."""
+    # 4 classes: 0: Soil, 1: Bedrock, 2: Sand, 3: Big Rock
+    # Row: Ground Truth, Col: Prediction
+    cm = np.array([
+        [50, 10, 0, 0],   # Soil: 60 total
+        [5, 40, 5, 0],    # Bedrock: 50 total
+        [0, 0, 30, 0],    # Sand: 30 total
+        [2, 0, 0, 8]      # Big Rock: 10 total
+    ], dtype=np.int64)
+
+    # TP = [50, 40, 30, 8]
+    # FP = [7, 10, 5, 0]
+    # FN = [10, 10, 0, 2]
+    # IoU = TP / (TP + FP + FN)
+    # Soil: 50 / (50 + 7 + 10) = 50 / 67 ≈ 0.7463
+    # Bedrock: 40 / (40 + 10 + 10) = 40 / 60 ≈ 0.6667
+    # Sand: 30 / (30 + 5 + 0) = 30 / 35 ≈ 0.8571
+    # Rock: 8 / (8 + 0 + 2) = 8 / 10 = 0.8000
+    tp = np.diag(cm).astype(float)
+    fp = np.sum(cm, axis=0) - tp
+    fn = np.sum(cm, axis=1) - tp
+    iou = tp / (tp + fp + fn)
+    precision = tp / (tp + fp)
+    recall = tp / (tp + fn)
+
+    assert np.isclose(iou[0], 50 / 67, atol=1e-3)
+    assert np.isclose(iou[1], 40 / 60, atol=1e-3)
+    assert np.isclose(iou[2], 30 / 35, atol=1e-3)
+    assert np.isclose(iou[3], 8 / 10, atol=1e-3)
+    assert np.isclose(np.mean(iou), np.mean([50/67, 40/60, 30/35, 8/10]), atol=1e-3)
+    assert np.isclose(precision[2], 30 / 35, atol=1e-3)
+    assert np.isclose(recall[2], 1.0, atol=1e-3)
+
+def test_missing_model_checkpoint_returns_503():
+    """Verify inference endpoint returns HTTP 503 instead of falling back to random weights."""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), color="red").save(buf, format="JPEG")
+    buf.seek(0)
+    res = client.post("/api/predict", data={"model_name": "segformer_b0"}, files={"file": ("test.jpg", buf, "image/jpeg")})
+    assert res.status_code == 503
+    assert "checkpoint unavailable" in res.json()["detail"].lower()

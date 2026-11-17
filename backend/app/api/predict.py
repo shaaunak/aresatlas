@@ -31,31 +31,37 @@ def get_or_load_model(model_name: str = "deeplabv3plus"):
         return model
 
     elif model_name == "deeplabv3plus":
-        model = DeepLabV3Plus(num_classes=4).to(DEVICE)
         ckpt_path = os.path.join(MODELS_DIR, "aresatlas_deeplabv3plus.pt")
-        if os.path.exists(ckpt_path):
-            state_dict = torch.load(ckpt_path, map_location=DEVICE)
-            model.load_state_dict(state_dict)
-            print(f"[+] Loaded DeepLabV3+ checkpoint from {ckpt_path}")
-        else:
-            print(f"[-] No checkpoint at {ckpt_path}, initialized DeepLabV3+ architecture.")
+        if not os.path.exists(ckpt_path):
+            raise HTTPException(
+                status_code=503,
+                detail=f"DeepLabV3+ model checkpoint unavailable at {ckpt_path}. Model training or downloaded weights required."
+            )
+        model = DeepLabV3Plus(num_classes=4).to(DEVICE)
+        state_dict = torch.load(ckpt_path, map_location=DEVICE)
+        model.load_state_dict(state_dict)
         model.eval()
         LOADED_MODELS[model_name] = model
+        print(f"[+] Loaded DeepLabV3+ checkpoint from {ckpt_path}")
         return model
 
     elif model_name == "segformer_b0":
-        model = SegFormerB0(num_classes=4).to(DEVICE)
         ckpt_path = os.path.join(MODELS_DIR, "aresatlas_segformer_b0.pt")
-        if os.path.exists(ckpt_path):
-            state_dict = torch.load(ckpt_path, map_location=DEVICE)
-            model.load_state_dict(state_dict)
-            print(f"[+] Loaded SegFormer-B0 checkpoint from {ckpt_path}")
+        if not os.path.exists(ckpt_path):
+            raise HTTPException(
+                status_code=503,
+                detail=f"SegFormer-B0 model checkpoint unavailable at {ckpt_path}. Model training or downloaded weights required."
+            )
+        model = SegFormerB0(num_classes=4).to(DEVICE)
+        state_dict = torch.load(ckpt_path, map_location=DEVICE)
+        model.load_state_dict(state_dict)
         model.eval()
         LOADED_MODELS[model_name] = model
+        print(f"[+] Loaded SegFormer-B0 checkpoint from {ckpt_path}")
         return model
 
     else:
-        raise ValueError(f"Unknown model name: {model_name}")
+        raise HTTPException(status_code=400, detail=f"Unknown model name: {model_name}")
 
 
 def colorize_mask(mask: np.ndarray) -> np.ndarray:

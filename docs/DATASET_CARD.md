@@ -6,10 +6,10 @@ The **AI4Mars** dataset was created by NASA Jet Propulsion Laboratory (JPL) to a
 - **Creators:** NASA Jet Propulsion Laboratory (Swan, Ono, et al., 2021)
 - **Hugging Face Mirror:** `hassanjbara/AI4MARS`
 - **License:** CC0 1.0 Universal (Public Domain)
-- **Data Volume:** 322 real NASA images partitioned into:
-  - `test_min1` (262 held-out images with 100% agreement expert annotations)
-  - `val` (20 images)
-  - `train` (40 images)
+- **Data Volume & Partitioning:**
+  - `test_min1`: 262 held-out images with 100% agreement expert consensus annotations (strictly reserved for empirical benchmarking).
+  - `val`: 20 images split from the crowdsourced training partition for validation monitoring and checkpoint selection.
+  - `train`: Crowdsourced training partition (`train-00000-of-00013.parquet`), audited to verify zero image ID leakage with the expert test set.
 
 ## Class Taxonomy
 - `0`: **Soil** — fine-grained regolith, smooth traversal, high wheel friction coefficient.
