@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use AresAtlas in your research or educational materials, please cite it as below."
+authors:
+  - family-names: "Kanetkar"
+    given-names: "Shaaunak"
+title: "AresAtlas: Mars Terrain Intelligence, Predictive Uncertainty & Decision-Aware Route Simulation"
+version: 2.0.0
+date-released: 2026-11-17
+url: "https://github.com/shaaunak/aresatlas"
+repository-code: "https://github.com/shaaunak/aresatlas"
+keywords:
+  - planetary-robotics
+  - mars-rover
+  - semantic-segmentation
+  - uncertainty-quantification
+  - route-planning
+  - ai4mars
+  - route-regret
+license: MIT

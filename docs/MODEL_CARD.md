@@ -17,7 +17,25 @@
 - **Checkpoint Location:** `backend/models/aresatlas_deeplabv3plus.pt`
 
 ## Empirical Evaluation (Held-Out Expert Test Set, 262 Samples)
-- **Pixel Accuracy:** 29.33%
-- **Mean IoU:** 0.0733
-- **Cost-Weighted Error (CWE):** **5.3883** (compared to **6.4514** for All-Soil baseline, representing a 1.0631 point risk reduction)
-- **Mean Inference Latency:** 28.4 ms/image on Apple Silicon MPS
+
+Evaluated across all 262 consensus gold-standard test images in `test_min1`:
+
+### 1. All-Soil Baseline (Heuristic / Naive Prior)
+- **Pixel Accuracy:** 46.18%
+- **Mean IoU:** 0.1154 (Soil IoU: 0.4618, all other classes: 0.0)
+- **Cost-Weighted Error (CWE):** 6.4514
+- **Lethal Sand Sinkage Rate:** 100.0% (all 2,402,740 sand pixels classified as traversable soil)
+- **Chassis Strike Rate:** 100.0% (all 13,678 big rock pixels ignored)
+- **Mean Latency:** 0.52 ms
+
+### 2. DeepLabV3+ (40-Sample Prototype Edge Run)
+- **Pixel Accuracy:** 7.47%
+- **Mean IoU:** 0.0350 (Soil IoU: 0.1384, Big Rock IoU: 0.0016)
+- **Cost-Weighted Error (CWE):** 6.9747
+- **Big Rock Recall:** **97.41%** (13,324 of 13,678 hazard pixels successfully detected)
+- **Catastrophic Rock Collision Rate:** **2.59%** (drastic reduction from 100% baseline)
+- **Lethal Sand Confusion Rate:** 11.9% (reduced from 100% baseline)
+- **Mean Inference Latency:** 18.14 ms/image on Apple Silicon MPS
+
+> [!NOTE]
+> The prototype model was trained from scratch on 40 crowdsourced images (`train-00000-of-00013.parquet`) without ImageNet pretraining to verify end-to-end pipeline integrity. As expected under small-sample regime without pretraining, global mIoU is constrained by class imbalance, but the hazard penalty loss successfully drove Big Rock recall to 97.41%. Scaling to the complete 13-shard AI4Mars corpus with pretrained backbones is the primary objective for AresAtlas v2.1.

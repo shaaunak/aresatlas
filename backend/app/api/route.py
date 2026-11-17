@@ -65,13 +65,40 @@ async def compute_route(req: RouteRequest):
         seg_mask[170:190, 80:105] = 3                 # Big Rock obstacle 2
         seg_mask[180:240, 160:240] = 1                # Bedrock zone
 
-    # Synthetic uncertainty based on class borders if not provided
+    # Compute uncertainty map from model inference if image is available
     H, W = seg_mask.shape
     uncertainty_map = np.zeros((H, W), dtype=np.float32)
-    # Class boundaries have higher uncertainty
-    gy, gx = np.gradient(seg_mask.astype(float))
-    edge_mag = np.hypot(gx, gy)
-    uncertainty_map = np.clip(edge_mag / (np.max(edge_mag) + 1e-5), 0.0, 1.0).astype(np.float32) * 0.8
+    
+    if req.sample_id:
+        img_dir = os.path.join(DATA_DIR, "images")
+        img_path = None
+        for ext in [".jpg", ".png", ".jpeg", ".JPG"]:
+            p = os.path.join(img_dir, f"{req.sample_id}{ext}")
+            if os.path.exists(p):
+                img_path = p
+                break
+        if img_path:
+            try:
+                import torch
+                from ..ml.models import DeepLabV3Plus, AllSoilBaseline
+                from ..ml.uncertainty import compute_predictive_entropy
+                device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+                raw_img = Image.open(img_path).convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
+                arr = (np.array(raw_img, dtype=np.float32) / 255.0 - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+                t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).float().to(device)
+                ckpt = os.path.join(DATA_DIR, "..", "..", "backend", "models", "aresatlas_deeplabv3plus.pt")
+                if os.path.exists(ckpt):
+                    model = DeepLabV3Plus(num_classes=4).to(device)
+                    model.load_state_dict(torch.load(ckpt, map_location=device))
+                    model.eval()
+                    with torch.no_grad():
+                        probs = torch.softmax(model(t), dim=1).cpu().numpy()[0]
+                else:
+                    baseline = AllSoilBaseline(num_classes=4)
+                    probs = baseline.predict(t).cpu().numpy()[0]
+                uncertainty_map = compute_predictive_entropy(probs).astype(np.float32)
+            except Exception as e:
+                print(f"[-] Route uncertainty inference error: {e}")
 
     config = CostConfig(
         soil_weight=req.soil_weight,
